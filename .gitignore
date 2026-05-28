@@ -1,20 +1,20 @@
-# Visual Studio piilokansio (sisältää välimuistit ja paikalliset ikkuna-asettelut)
+# JetBrains / CLion / Android Studio roskat
+.idea/
+*.cmake/
+
+# Visual Studio piilokansio
 .vs/
 
-# Rakennustuotokset ja väliaikaistiedostot (Build artifacts)
-x64/
-Debug/
-Release/
-[Dd]ebug/
-[Rr]elease/
+# Nappaa x64 ja Debug/Release mistä tahansa alikansiosta (**/)
+**/x64/
+**/Debug/
+**/Release/
 
-# Visual Studion käyttäjäkohtaiset asetukset (näitä ei haluta muille kehittäjille)
+# Kääntäjän väliaikaistiedostot
 *.user
 *.suo
 *.db
 *.opendb
-
-# Kääntäjän lokit ja väliaikaisprofiilit
 *.tlog
 *.log
 *.obj

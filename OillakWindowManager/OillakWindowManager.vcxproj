@@ -105,10 +105,14 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(VULKAN_SDK)\Include</AdditionalIncludeDirectories>
+      <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(VULKAN_SDK)\Lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -127,11 +131,15 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="..\c-plus-plus\window.h" />
+    <ClInclude Include="VulkanRenderer.h" />
+    <ClInclude Include="VulkanTypes.h" />
+    <ClInclude Include="VulkanUtils.h" />
+    <ClInclude Include="window.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\c-plus-plus\main.cpp" />
-    <ClCompile Include="..\c-plus-plus\window.cpp" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="VulkanRenderer.cpp" />
+    <ClCompile Include="window.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="README.md" />

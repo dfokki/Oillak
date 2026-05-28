@@ -4,5 +4,4 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="../OillakWindowManager/OillakWindowManager.vcxproj" Id="6dd87239-5204-4110-9585-f7622c7ca3ab" />
-  <Project Path="c-plus-plus.vcxproj" Id="397f0d16-65eb-4162-a2ee-46c7f4f8e14e" />
 </Solution>
