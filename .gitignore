@@ -10,6 +10,12 @@
 **/Debug/
 **/Release/
 
+# === UUDET CMAKE-SÄÄNNÖT ===
+out/
+build/
+CMakeSettings.json
+CMakeUserPresets.json
+
 # Kääntäjän väliaikaistiedostot
 *.user
 *.suo

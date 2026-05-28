@@ -1,4 +1,0 @@
-C:/Users/sonat/source/repos/dfokki/Oillak/out/build/x64-Debug/CMakeFiles/OillakWindowManager.dir
-C:/Users/sonat/source/repos/dfokki/Oillak/out/build/x64-Debug/CMakeFiles/Sandbox.dir
-C:/Users/sonat/source/repos/dfokki/Oillak/out/build/x64-Debug/CMakeFiles/edit_cache.dir
-C:/Users/sonat/source/repos/dfokki/Oillak/out/build/x64-Debug/CMakeFiles/rebuild_cache.dir
