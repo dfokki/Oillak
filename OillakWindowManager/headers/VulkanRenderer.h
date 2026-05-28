@@ -37,6 +37,7 @@ private:
     VkFormat m_swapChainImageFormat;
     VkExtent2D m_swapChainExtent;
     std::vector<VkImageView> m_swapChainImageViews;
+	VkRenderPass m_renderPass = VK_NULL_HANDLE;
     // Sisäiset funktiot
     void initVulkan();
 	void pickPhysicalDevice(); //Etsitään fyysinen laite, joka tukee Vulkania
@@ -45,6 +46,7 @@ private:
 	void createSurface(); //Luodaan Vulkanin surface ikkunalle, jotta voimme piirtää siihen
 	void createSwapChain(); //Luodaan swapchain, joka hallitsee ikkunan kuvia ja niiden esitystä
 	void createImageViews(); //Luodaan kuvaesitykset swapchainin kuville, jotta voimme käyttää niitä renderöinnissä
+	void createRenderpass(); //Luodaan renderpass, joka määrittelee miten renderöinti tapahtuu (tähän liittyy mm. väribufferin ja syvyysbufferin määrittely)
     SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device); //Kysytään swapchainin tukemat ominaisuudet, formatit ja esitystavat
 
 	//Swapchainin valintafunktiot, jotka valitsevat parhaan saatavilla olevan vaihtoehdon

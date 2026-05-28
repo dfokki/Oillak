@@ -24,6 +24,7 @@ void VulkanRenderer::initVulkan() {
 	createLogicalDevice(); //TODO: luodaan looginen laite, joka kommunikoi fyysisen laitteen kanssa
     createSwapChain();
     createImageViews();
+	createRenderpass();
 }
 
 void VulkanRenderer::createInstance() {
@@ -396,8 +397,57 @@ void VulkanRenderer::createLogicalDevice() {
     std::cout << "...Looginen laite ja jonot luotu onnistuneesti!\n";
 }
 
+void VulkanRenderer::createRenderpass() {
+    std::printf("Luodaan Render Pass...\n");
+	// Render Pass määrittelee, miten renderöinti tapahtuu. Tässä vaiheessa määritellään vain yksinkertainen väribufferi ilman syvyysbufferia tai monimoninäytön tukea. Tämä on hyvä lähtökohta, ja myöhemmin tutoriaalissa voidaan laajentaa tätä monimutkaisempaan renderpassiin.
+	VkAttachmentDescription colorAttachment{};
+	colorAttachment.format = m_swapChainImageFormat; // Käytetään samaa formaattia kuin swapchainin kuvat
+	colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT; // Ei multisamplingia (antialiasing)
+	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // Tyhjennetään kuva joka kerta ennen piirtämistä
+	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; // Tallennetaan piirrettävä kuva muistiin esitystä varten
+	colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // Emme käytä stenciliä, joten ei väliä
+	colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; // Emme käytä stenciliä, joten ei väliä
+	colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // Alkuperäinen layout ei merkitse mitään, koska tyhjennämme sen joka kerta
+	colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; // Lopullinen layout on esityskelpoinen, jotta voimme näyttää sen ikkunassa
+	VkAttachmentReference colorAttachmentRef{};
+	colorAttachmentRef.attachment = 0; // Viittaa ensimmäiseen (ja ainoaan) liitteeseen renderpassissa
+	colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; // Layout, jossa renderöinti tapahtuu
+	VkSubpassDescription subpass{};
+	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS; // Tämä on grafiikkasubpassi
+	subpass.colorAttachmentCount = 1;
+	subpass.pColorAttachments = &colorAttachmentRef; // Käytetään määritettyä väriliitettä
+	//jotta vulkan tietää, että meidän renderöinti riippuu edellisestä renderöinnistä (esim. swapchainin kuva on valmis esitettäväksi), määritellään subpass-dependenssi
+	// Tämä varmistaa, että renderöinti odottaa swapchainin kuvan olevan valmis ennen kuin yrittää piirtää siihen, ja että kuva on esityskelpoinen ennen kuin se näytetään ikkunassa
+	//ilman tätä dependenssiä saatat kohdata ongelmia, kuten mustia ruutuja tai virheitä renderöinnissä, koska Vulkan ei tiedä, milloin swapchainin kuva on valmis käytettäväksi
+    VkSubpassDependency dependency{};
+	dependency.srcSubpass = VK_SUBPASS_EXTERNAL; // Riippuvuus ulkoisesta subpassista (esim. edellisestä renderöinnistä)
+	dependency.dstSubpass = 0; // Riippuvuus ensimmäisestä subpassista (meidän ainoa subpassi)
+	dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; // Odotetaan, että edellinen renderöinti on valmis ennen kuin aloitamme tämän 
+	dependency.srcAccessMask = 0; // Ei tarvitse odottaa mitään erityistä pääsyä, koska edellinen renderöinti on valmis 
+	dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; // Tämä subpassi käyttää väriliitettä, joten odotetaan, että se on valmis ennen kuin aloitamme tämän
+	dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; // Tarvitsemme kirjoitusoikeuden väriliitteeseen, jotta voimme renderöidä siihen
+	// Render Passin luontitiedot
+    VkRenderPassCreateInfo renderPassInfo{};
+	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+	renderPassInfo.attachmentCount = 1;
+	renderPassInfo.pAttachments = &colorAttachment;
+	renderPassInfo.subpassCount = 1;
+	renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.dependencyCount = 1;
+	renderPassInfo.pDependencies = &dependency;
+
+	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, &m_renderPass) != VK_SUCCESS) {
+		throw std::runtime_error("Virhe: Render Passin luonti epäonnistui!");
+	}
+	std::printf("...Render Pass luotu onnistuneesti!\n");
+
+}
 void VulkanRenderer::cleanup() {
 	//tärkeää tuhoa kaikki Vulkan-resurssit päinvastaisessa järjestyksessä kuin ne luotiin, muuten voi tapahtua outoja virheitä ja muistivuotoja!
+    if (m_renderPass != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(m_device, m_renderPass, nullptr);
+        m_renderPass = VK_NULL_HANDLE;
+    }
     // Tuhoa Image View't 
     for (auto imageView : m_swapChainImageViews) {
         if (imageView != VK_NULL_HANDLE) {
