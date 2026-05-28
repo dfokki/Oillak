@@ -1,7 +1,0 @@
-<Solution>
-  <Configurations>
-    <Platform Name="x64" />
-    <Platform Name="x86" />
-  </Configurations>
-  <Project Path="../OillakWindowManager/OillakWindowManager.vcxproj" Id="6dd87239-5204-4110-9585-f7622c7ca3ab" />
-</Solution>
