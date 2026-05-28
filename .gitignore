@@ -1,0 +1,23 @@
+# Visual Studio piilokansio (sisältää välimuistit ja paikalliset ikkuna-asettelut)
+.vs/
+
+# Rakennustuotokset ja väliaikaistiedostot (Build artifacts)
+x64/
+Debug/
+Release/
+[Dd]ebug/
+[Rr]elease/
+
+# Visual Studion käyttäjäkohtaiset asetukset (näitä ei haluta muille kehittäjille)
+*.user
+*.suo
+*.db
+*.opendb
+
+# Kääntäjän lokit ja väliaikaisprofiilit
+*.tlog
+*.log
+*.obj
+*.ilk
+*.pdb
+*.idb
