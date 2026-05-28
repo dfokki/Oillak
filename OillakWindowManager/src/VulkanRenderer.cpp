@@ -25,8 +25,81 @@ void VulkanRenderer::initVulkan() {
     createSwapChain();
     createImageViews();
 	createRenderpass();
+    createFramebuffers();
+    createGraphicsPipeline();
+	createCommandPool();
+	createCommandBuffer();
+	createSyncObjects();
+    
 }
+void VulkanRenderer::drawFrame() {
+    // 1. Odotetaan, että edellinen ruutu on piirretty valmiiksi (CPU odottaa)
+    vkWaitForFences(m_device, 1, &m_inFlightFence, VK_TRUE, UINT64_MAX);
+    // Lukitaan aita uudelleen tätä framea varten
+    vkResetFences(m_device, 1, &m_inFlightFence);
 
+    // 2. Pyydetään Swapchainilta seuraava vapaa kuva
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(m_device, m_swapChain, UINT64_MAX, m_imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+    // 3. Nollataan ja nauhoitetaan komentopuskuri uusiksi
+    vkResetCommandBuffer(m_commandBuffer, 0);
+    recordCommandBuffer(m_commandBuffer, imageIndex);
+
+    // 4. Määritetään, miten komennot lähetetään näytönohjaimelle
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    // Odota, että kuva on oikeasti saatavilla ennen kuin aletaan kirjoittaa siihen värejä
+    VkSemaphore waitSemaphores[] = { m_imageAvailableSemaphore };
+    VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+
+    // Mitä lähetetään
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &m_commandBuffer;
+
+    // Mitä semaforea signaaloidaan, kun piirtäminen on valmis
+    VkSemaphore signalSemaphores[] = { m_renderFinishedSemaphore };
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+
+    // 5. LÄHETETÄÄN KOMENNOT GPU:lle! (Samalla avataan aita, kun työ on valmis)
+    if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFence) != VK_SUCCESS) {
+        throw std::runtime_error("Virhe: Komentopuskurin lähetys jonoon epäonnistui!");
+    }
+
+    // 6. Näytetään valmis kuva ruudulla
+    VkPresentInfoKHR presentInfo{};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores; // Odota, että renderöinti on valmis
+
+    VkSwapchainKHR swapChains[] = { m_swapChain };
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &imageIndex;
+
+    vkQueuePresentKHR(m_presentQueue, &presentInfo);
+}
+void VulkanRenderer::createSyncObjects() {
+    VkSemaphoreCreateInfo semaphoreInfo{};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    // TÄRKEÄÄ: Aita luodaan valmiiksi "avattuun" tilaan, jotta ensimmäinen frame 
+    // ei jää ikuisesti odottamaan aiempaa, olematonta framea.
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_imageAvailableSemaphore) != VK_SUCCESS ||
+        vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_renderFinishedSemaphore) != VK_SUCCESS ||
+        vkCreateFence(m_device, &fenceInfo, nullptr, &m_inFlightFence) != VK_SUCCESS) {
+        throw std::runtime_error("Virhe: Synkronointiobjektien luonti epäonnistui!");
+    }
+}
 void VulkanRenderer::createInstance() {
     // 1. Sovelluksen tiedot
     VkApplicationInfo appInfo{};
@@ -442,8 +515,266 @@ void VulkanRenderer::createRenderpass() {
 	std::printf("...Render Pass luotu onnistuneesti!\n");
 
 }
+VkShaderModule VulkanRenderer::createShaderModule(const std::vector<char>& code) {
+    VkShaderModuleCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    createInfo.codeSize = code.size();
+
+    // Vulkan vaatii, että koodiosoitin on tyyppiä uint32_t*, joten tehdas castataan char* -> uint32_t*
+    createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+    VkShaderModule shaderModule;
+    if (vkCreateShaderModule(m_device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+        throw std::runtime_error("Virhe: Shader modulen luonti epäonnistui!");
+    }
+
+    return shaderModule;
+}
+#include <fstream>
+
+static std::vector<char> readFile(const std::string& filename) {
+    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+    if (!file.is_open()) {
+        throw std::runtime_error("Virhe: Tiedoston avaaminen epäonnistui: " + filename);
+    }
+
+    size_t fileSize = (size_t)file.tellg();
+    std::vector<char> buffer(fileSize);
+
+    file.seekg(0);
+    file.read(buffer.data(), fileSize);
+    file.close();
+
+    return buffer;
+}
+void VulkanRenderer::createGraphicsPipeline() {
+    
+        std::printf("Aloitetaan grafiikkaputken (Graphics Pipeline) alustus...\n");
+
+        // === 1. LADATAAN SHADER-BINÄÄRIT SISÄÄN ===
+        auto vertShaderCode = readFile("vert.spv");
+        auto fragShaderCode = readFile("frag.spv");
+
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        // Määritellään Vertex Shaderin vaihe putkelle
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertShaderModule;
+        vertShaderStageInfo.pName = "main"; // Funktion nimi shaderissa
+
+        // Määritellään Fragment Shaderin vaihe putkelle
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 0;
+    vertexInputInfo.pVertexBindingDescriptions = nullptr;
+    vertexInputInfo.vertexAttributeDescriptionCount = 0;
+    vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+
+    // 2. Input Assembly - Vaihe (Miten pisteet yhdistetään geometriaksi)
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; // Piirretään kolmioita
+    inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+    // 3. Viewport ja Scissor (Mille alueelle ikkunassa piirretään)
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = (float)m_swapChainExtent.width;
+    viewport.height = (float)m_swapChainExtent.height;
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+
+    VkRect2D scissor{};
+    scissor.offset = { 0, 0 };
+    scissor.extent = m_swapChainExtent;
+
+    VkPipelineViewportStateCreateInfo viewportState{};
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+
+    // 4. Rasterizer - Rasterointivaihe (Muuttaa geometriapisteet pikseleiksi)
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.depthClampEnable = VK_FALSE;
+    rasterizer.rasterizerDiscardEnable = VK_FALSE; // Sallitaan piirtäminen ruudulle
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;  // Täytetään kolmio (vaihtoehtona esim. VK_POLYGON_MODE_LINE)
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;    // Karsitaan kolmion takapuolet tehon säästämiseksi
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE; // Kolmion pisteiden suunta myötäpäivään
+    rasterizer.depthBiasEnable = VK_FALSE;
+
+    // 5. Multisampling (Reunanpehmennys - pidetään pois päältä toistaiseksi)
+    VkPipelineMultisampleStateCreateInfo multisampling{};
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.sampleShadingEnable = VK_FALSE;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    // 6. Color Blending - Värien sekoitus (Miten uusi pikseli sekoittuu vanhaan)
+    VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = VK_FALSE; // Ei läpinäkyvyyttä vielä tässä vaiheessa
+
+    VkPipelineColorBlendStateCreateInfo colorBlending{};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.logicOpEnable = VK_FALSE;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    // 7. Pipeline Layoutin luonti (Tähän määritellään myöhemmin Uniform-muuttujat/matriisit)
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 0;
+    pipelineLayoutInfo.pSetLayouts = nullptr;
+    pipelineLayoutInfo.pushConstantRangeCount = 0;
+    pipelineLayoutInfo.pPushConstantRanges = nullptr;
+
+    if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS) {
+        throw std::runtime_error("Virhe: Pipeline Layoutin luonti epäonnistui!");
+    }
+    // === 2. LUODAAN ITSE GRAFIIKKAPUTKI ===
+    VkGraphicsPipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages; // Kytketään meidän shader-vaiheet mukaan!
+
+    // Kytketään aiemmin luodut kiinteät asetukset
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = nullptr; // Ei syvyystestiä vielä
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = nullptr; // Ei dynaamisia tiloja vielä
+
+    pipelineInfo.layout = m_pipelineLayout; // Kytketään layout
+    pipelineInfo.renderPass = m_renderPass; // Kytketään Render Pass, johon putkea käytetään
+    pipelineInfo.subpass = 0;               // Subpassin indeksi
+
+    pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Ei käytetä pohjaputkia optimointiin
+    pipelineInfo.basePipelineIndex = -1;
+
+    // Luodaan itse putki!
+    if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_graphicsPipeline) != VK_SUCCESS) {
+        throw std::runtime_error("Virhe: Grafiikkaputken (Graphics Pipeline) luonti epäonnistui!");
+    }
+
+    std::printf("...Grafiikkaputki luotu onnistuneesti!\n");
+
+    // === 3. TUHOTAAN SHADER MODUULIT ===
+    // Kun putki on luotu, näytönohjain on kääntänyt koodin omalle konekielelleen. 
+    // Väliaikaisia VkShaderModule-kahvoja ei enää tarvita, joten ne tuhotaan heti funktion lopussa.
+    vkDestroyShaderModule(m_device, fragShaderModule, nullptr);
+    vkDestroyShaderModule(m_device, vertShaderModule, nullptr);
+}
+void VulkanRenderer::createCommandPool() {
+    QueueFamilyIndices queueFamilyIndices = findQueueFamilies(m_physicalDevice); // Tarvitset tämän apufunktion
+
+    VkCommandPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT; // Sallitaan puskurin uudelleenkäyttö
+    poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
+
+    if (vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_commandPool) != VK_SUCCESS) {
+        throw std::runtime_error("Virhe: Command Poolin luonti epäonnistui!");
+    }
+}
+void VulkanRenderer::createCommandBuffer() {
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.commandPool = m_commandPool;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandBufferCount = 1;
+
+    if (vkAllocateCommandBuffers(m_device, &allocInfo, &m_commandBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("Virhe: Command Bufferin luonti epäonnistui!");
+    }
+}
+void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+        throw std::runtime_error("Virhe: Komentopuskurin aloittaminen epäonnistui!");
+    }
+
+    // 1. Aloitetaan Render Pass
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = m_renderPass;
+    renderPassInfo.framebuffer = m_swapChainFramebuffers[imageIndex]; // Tarvitset tämän listan!
+    renderPassInfo.renderArea.offset = { 0, 0 };
+    renderPassInfo.renderArea.extent = m_swapChainExtent;
+
+    VkClearValue clearColor = { {{0.0f, 0.0f, 0.0f, 1.0f}} }; // Musta taustaväri
+    renderPassInfo.clearValueCount = 1;
+    renderPassInfo.pClearValues = &clearColor;
+
+    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    // 2. Kytketään meidän Graphics Pipeline
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline);
+
+    // 3. Piirretään kolmio! (3 vertexiä, 1 instanssi)
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+    // 4. Lopetetaan Render Pass
+    vkCmdEndRenderPass(commandBuffer);
+
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("Virhe: Komentopuskurin tallennus epäonnistui!");
+    }
+}
+void VulkanRenderer::createFramebuffers() {
+    m_swapChainFramebuffers.resize(m_swapChainImageViews.size());
+
+    for (size_t i = 0; i < m_swapChainImageViews.size(); i++) {
+        VkImageView attachments[] = {
+            m_swapChainImageViews[i]
+        };
+
+        VkFramebufferCreateInfo framebufferInfo{};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = m_renderPass;
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.width = m_swapChainExtent.width;
+        framebufferInfo.height = m_swapChainExtent.height;
+        framebufferInfo.layers = 1;
+
+        if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, &m_swapChainFramebuffers[i]) != VK_SUCCESS) {
+            throw std::runtime_error("Virhe: Framebufferin luonti epäonnistui!");
+        }
+    }
+    std::printf("...Framebufferit luotu onnistuneesti (%zu kpl)!\n", m_swapChainFramebuffers.size());
+}
 void VulkanRenderer::cleanup() {
-	//tärkeää tuhoa kaikki Vulkan-resurssit päinvastaisessa järjestyksessä kuin ne luotiin, muuten voi tapahtua outoja virheitä ja muistivuotoja!
+    // Tuhoa grafiikkaputki ja sen layout
+    if (m_graphicsPipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(m_device, m_graphicsPipeline, nullptr);
+        m_graphicsPipeline = VK_NULL_HANDLE;
+    }
+	if (m_pipelineLayout != VK_NULL_HANDLE) {
+		vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
+		m_pipelineLayout = VK_NULL_HANDLE;
+	}
+    //tärkeää tuhoa kaikki Vulkan-resurssit päinvastaisessa järjestyksessä kuin ne luotiin, muuten voi tapahtua outoja virheitä ja muistivuotoja!
     if (m_renderPass != VK_NULL_HANDLE) {
         vkDestroyRenderPass(m_device, m_renderPass, nullptr);
         m_renderPass = VK_NULL_HANDLE;
@@ -463,6 +794,22 @@ void VulkanRenderer::cleanup() {
 	if (m_surface != VK_NULL_HANDLE) {
 		vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
 	}
+    if (m_commandPool != VK_NULL_HANDLE) {
+        vkDestroyCommandPool(m_device, m_commandPool, nullptr);
+    }
+  
+    if (m_renderFinishedSemaphore != VK_NULL_HANDLE) {
+        vkDestroySemaphore(m_device, m_renderFinishedSemaphore, nullptr);
+    }
+    if (m_imageAvailableSemaphore != VK_NULL_HANDLE) {
+        vkDestroySemaphore(m_device, m_imageAvailableSemaphore, nullptr);
+    }
+    if (m_inFlightFence != VK_NULL_HANDLE) {
+        vkDestroyFence(m_device, m_inFlightFence, nullptr);
+    }
+    for (auto framebuffer : m_swapChainFramebuffers) {
+        vkDestroyFramebuffer(m_device, framebuffer, nullptr);
+    }
 	//tuhota looginen laite (Device) 
 	if (m_device != VK_NULL_HANDLE) {
 		vkDestroyDevice(m_device, nullptr);

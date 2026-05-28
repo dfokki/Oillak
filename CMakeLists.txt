@@ -37,3 +37,30 @@ add_executable(Sandbox ${SANDBOX_SOURCES})
 
 # Jos haluat käyttää Vulkania myös sandboxin puolella testeissä:
 target_link_libraries(Sandbox PRIVATE Vulkan::Vulkan)
+
+# ============================================================================
+# AUTOMAATTINEN SHADER-KÄÄNNÖS (GLSLC)
+# ============================================================================
+
+# Etsitään glslc-kääntäjä Vulkan SDK:sta
+find_program(VULKAN_GLSL_COMPILER NAMES glslc HINTS ${Vulkan_BIN_DIR})
+
+if(VULKAN_GLSL_COMPILER)
+    message(STATUS "Glslc-kääntäjä löydetty: ${VULKAN_GLSL_COMPILER}")
+    
+    # 1. Vertex Shaderin kääntö ja kopiointi build-kansioon
+    add_custom_command(
+        TARGET OillakWindowManager POST_BUILD
+        COMMAND ${VULKAN_GLSL_COMPILER} "${CMAKE_CURRENT_SOURCE_DIR}/OillakWindowManager/src/shader.vert" -o "${CMAKE_CURRENT_BINARY_DIR}/vert.spv"
+        COMMENT "Käännetään Vertex Shader SPIR-V muotoon..."
+    )
+    
+    # 2. Fragment Shaderin kääntö ja kopiointi build-kansioon
+    add_custom_command(
+        TARGET OillakWindowManager POST_BUILD
+        COMMAND ${VULKAN_GLSL_COMPILER} "${CMAKE_CURRENT_SOURCE_DIR}/OillakWindowManager/src/shader.frag" -o "${CMAKE_CURRENT_BINARY_DIR}/frag.spv"
+        COMMENT "Käännetään Fragment Shader SPIR-V muotoon..."
+    )
+else()
+    message(WARNING "glslc-kääntäjää ei löytynyt! Shaderit pitää kääntää käsin.")
+endif()
