@@ -1,0 +1,23 @@
+# JetBrains / CLion / Android Studio roskat
+.idea/
+*.cmake/
+
+# Visual Studio piilokansio
+.vs/
+
+# Nappaa x64 ja Debug/Release mistä tahansa alikansiosta (**/)
+**/x64/
+**/Debug/
+**/Release/
+
+# Kääntäjän väliaikaistiedostot
+*.user
+*.suo
+*.db
+*.opendb
+*.tlog
+*.log
+*.obj
+*.ilk
+*.pdb
+*.idb
