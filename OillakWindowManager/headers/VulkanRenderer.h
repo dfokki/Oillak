@@ -5,7 +5,15 @@
 #include "window.h"
 #include "VulkanTypes.h"
 #include <set>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <chrono>
 
+//Tätä matriisia käytetään vertex shaderissä, jotta voimme muuttaa objektien sijaintia, kokoa ja suuntaa ikkunassa.
+struct UniformBufferObject {
+	glm::mat4 transform; // Yleinen muunnosmatriisi, joka sisältää käännös-, kierto- ja skaalaustiedot.
+   
+};
 class VulkanRenderer {
 public:
     // Konstruktori ottaa vastaan viitteen luomaasi ikkunaan
@@ -46,6 +54,18 @@ private:
     VkPipeline m_graphicsPipeline = VK_NULL_HANDLE;
     //  
     std::vector<VkFramebuffer> m_swapChainFramebuffers;
+	// Vertex buffer ja sen muisti, joita käytetään geometriaan (esim. kolmioiden) piirtämiseen ikkunaan
+    VkBuffer m_vertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory m_vertexBufferMemory = VK_NULL_HANDLE;
+	// Index buffer ja sen muisti, joita käytetään geometriaan (esim. kolmioiden) piirtämiseen ikkunaan, jos haluamme käyttää indeksoitua renderöintiä (index bufferin avulla voimme määritellä, miten vertexit yhdistetään kolmioiksi ilman, että meidän tarvitsee toistaa vertex-tietoja)
+    VkBuffer m_indexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory m_indexBufferMemory = VK_NULL_HANDLE;
+	// Descriptor setit ja uniform bufferit, joita käytetään shaderien datan syöttämiseen (esim. muunnosmatriisit)
+    VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet m_descriptorSet = VK_NULL_HANDLE;
+    VkBuffer m_uniformBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory m_uniformBufferMemory = VK_NULL_HANDLE;
     // Sisäiset funktiot
     void initVulkan();
 	void pickPhysicalDevice(); //Etsitään fyysinen laite, joka tukee Vulkania
@@ -62,6 +82,17 @@ private:
     void createCommandBuffer();
 	void createFramebuffers(); //Luodaan framebufferit swapchainin kuville, jotta voimme renderöidä niihin
     void createSyncObjects();
+	// Vertex bufferin luonti ja hallinta, tarvitsemme tämän, jotta voimme piirtää geometriaa (esim. kolmioita) ikkunaan
+    void createVertexBuffer();
+	// Index bufferin luonti ja hallinta, tarvitsemme tämän, jos haluamme käyttää indeksoitua renderöintiä (index bufferin avulla voimme määritellä, miten vertexit yhdistetään kolmioiksi ilman, että meidän tarvitsee toistaa vertex-tietoja)
+	void createIndexBuffer();
+	// Descriptor setien ja uniform bufferin luonti ja hallinta, tarvitsemme nämä, jotta voimme syöttää dataa shaderille (esim. muunnosmatriisit)
+    void createDescriptorSetLayout();
+    void createUniformBuffer();
+    void createDescriptorPool();
+    void createDescriptorSets();
+	// Uniform bufferin päivittäminen, jotta voimme muuttaa objektien sijaintia, kokoa ja suuntaa ikkunassa joka framella
+    void updateUniformBuffer(); // Tätä kutsutaan joka framella
 	// Renderöintikomentoja käsittelevät funktiot
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex); //Tähän funktioon tallennetaan renderöintikomennot, jotka suoritetaan joka ikiselle swapchainin kuvalle
    
@@ -83,7 +114,11 @@ private:
    
     void cleanup();
 
-    // Uudet apufunktiot laitteen valintaan
+    // Apufunktiot laitteen valintaan
     bool isDeviceSuitable(VkPhysicalDevice device);
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
+
+    // Apufunktio, jolla kysytään näytönohjaimelta oikeantyyppistä muistia
+    uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+
 };

@@ -12,12 +12,10 @@ int main(int argc, char* argv[]) {
 
         window window(800, 600, L"Oillak");
         VulkanRenderer renderer(window,preferredDevice);
-		renderer.drawFrame(); // Piirret‰‰n ensimm‰inen ruutu, jotta n‰emme heti jotain ikkunassa
-        while (window.processMessages()) {
-			
-			
-            // T‰ss‰ voisi piirt‰‰ tai p‰ivitt‰‰ logiikkaa
-        }
+		      while (window.processMessages()) {
+                  renderer.drawFrame(); // Piirret‰‰n ensimm‰inen ruutu, jotta n‰emme heti jotain ikkunassa		
+                  renderer.waitIdle();
+                    }
 		renderer.waitIdle(); // Varmistetaan, ett‰ kaikki GPU-tyˆt on tehty ennen kuin tuhotaan resurssit
     }
     catch (const std::exception& e) {

@@ -26,7 +26,16 @@ void VulkanRenderer::initVulkan() {
     createImageViews();
 	createRenderpass();
     createFramebuffers();
+
+	createDescriptorSetLayout();
+
     createGraphicsPipeline();
+    
+	createVertexBuffer();
+    createIndexBuffer();
+	createUniformBuffer();
+	createDescriptorPool();
+	createDescriptorSets();
 	createCommandPool();
 	createCommandBuffer();
 	createSyncObjects();
@@ -35,6 +44,8 @@ void VulkanRenderer::initVulkan() {
 void VulkanRenderer::drawFrame() {
     // 1. Odotetaan, että edellinen ruutu on piirretty valmiiksi (CPU odottaa)
     vkWaitForFences(m_device, 1, &m_inFlightFence, VK_TRUE, UINT64_MAX);
+    
+	updateUniformBuffer(); // Päivitetään uniform buffer, jotta voimme muuttaa objektien sijaintia, kokoa ja suuntaa ikkunassa joka framella
     // Lukitaan aita uudelleen tätä framea varten
     vkResetFences(m_device, 1, &m_inFlightFence);
 
@@ -574,13 +585,16 @@ void VulkanRenderer::createGraphicsPipeline() {
         fragShaderStageInfo.pName = "main";
 
         VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+		
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInputInfo.vertexBindingDescriptionCount = 0;
-    vertexInputInfo.pVertexBindingDescriptions = nullptr;
-    vertexInputInfo.vertexAttributeDescriptionCount = 0;
-    vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+	vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+    vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
     // 2. Input Assembly - Vaihe (Miten pisteet yhdistetään geometriaksi)
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -639,14 +653,13 @@ void VulkanRenderer::createGraphicsPipeline() {
     // 7. Pipeline Layoutin luonti (Tähän määritellään myöhemmin Uniform-muuttujat/matriisit)
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 0;
-    pipelineLayoutInfo.pSetLayouts = nullptr;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &m_descriptorSetLayout;
     pipelineLayoutInfo.pushConstantRangeCount = 0;
     pipelineLayoutInfo.pPushConstantRanges = nullptr;
 
-    if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS) {
-        throw std::runtime_error("Virhe: Pipeline Layoutin luonti epäonnistui!");
-    }
+	chk(vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout));
+
     // === 2. LUODAAN ITSE GRAFIIKKAPUTKI ===
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -728,12 +741,18 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
 
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-    // 2. Kytketään meidän Graphics Pipeline
+    // 2. Kytketään Graphics Pipeline
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline);
+    //Sidotaan Vertex Buffer binding-paikkaan 0
+    VkBuffer vertexBuffers[] = { m_vertexBuffer };
+    VkDeviceSize offsets[] = { 0 };
 
-    // 3. Piirretään kolmio! (3 vertexiä, 1 instanssi)
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+    vkCmdBindIndexBuffer(commandBuffer, m_indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
+	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_descriptorSet, 0, nullptr);
+    // Piirretään 6 indeksiä (eli 2 kolmiota), 1 instanssi, alkaen indeksistä 0 jne.
+    vkCmdDrawIndexed(commandBuffer, 6, 1, 0, 0, 0);
     // 4. Lopetetaan Render Pass
     vkCmdEndRenderPass(commandBuffer);
 
@@ -764,6 +783,199 @@ void VulkanRenderer::createFramebuffers() {
     }
     std::printf("...Framebufferit luotu onnistuneesti (%zu kpl)!\n", m_swapChainFramebuffers.size());
 }
+
+void VulkanRenderer::createDescriptorSetLayout() {
+    VkDescriptorSetLayoutBinding uboLayoutBinding{};
+    uboLayoutBinding.binding = 0;
+    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uboLayoutBinding.descriptorCount = 1;
+    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT; // Käytetään vertex shaderissa
+    uboLayoutBinding.pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &uboLayoutBinding;
+
+    chk(vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, &m_descriptorSetLayout));
+}
+
+// Apufunktio, joka etsii sopivan muistityypin GPU:lta.
+uint32_t VulkanRenderer::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProperties);
+
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+    throw std::runtime_error("Sopivaa muistityyppia ei loytynyt naitonohjaimelta!");
+}
+// Tässä funktiossa luodaan vertex-puskuri, joka sisältää kolmion vertex-tiedot (pisteet ja värit). Tämä puskuri varataan GPU:n muistista, ja siihen kopioidaan dataa CPU:sta. 
+// Vulkan vaatii useita vaiheita tämän tekemiseen, kuten puskurin luomisen, muistivaatimusten hakemisen, muistin varaamisen ja sitomisen, sekä lopulta datan kopioimisen.
+void VulkanRenderer::createVertexBuffer() {
+
+    std::vector<Vertex> vertices = {
+         {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}}, // 0: Vasen yläkulma (Punainen)
+         {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}}, // 1: Oikea yläkulma (Vihreä)
+         {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}}, // 2: Oikea alakulma (Sininen)
+         {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}  // 3: Vasen alakulma (Valkoinen)
+    };
+
+    VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+
+    // 2. Luodaan itse puskuri-objekti (Buffer)
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; // Kerrotaan, että tämä on Vertex puskuri
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    // chk on aiemmin luomasi VulkanUtils-makro/funktio virheentarkistukseen
+    chk(vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_vertexBuffer));
+
+    // 3. Kysytään puskurin vaatimat muistivaatimukset GPU:lta
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(m_device, m_vertexBuffer, &memRequirements);
+
+    // 4. Varataan varsinainen fyysinen muisti GPU:lta (Allocate)
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    chk(vkAllocateMemory(m_device, &allocInfo, nullptr, &m_vertexBufferMemory));
+
+    // 5. Sidotaan varattu muisti ja puskuri-objekti toisiinsa
+    vkBindBufferMemory(m_device, m_vertexBuffer, m_vertexBufferMemory, 0);
+
+    // 6. KARTTAmuisti (Map Memory): Avataan "putki" RAM-muistista VRAM-muistiin ja kopioidaan data
+    void* data;
+    vkMapMemory(m_device, m_vertexBufferMemory, 0, bufferSize, 0, &data);
+    memcpy(data, vertices.data(), (size_t)bufferSize);
+    vkUnmapMemory(m_device, m_vertexBufferMemory);
+}
+void VulkanRenderer::createIndexBuffer() {
+    // Määritellään, miten pisteet yhdistetään kahdeksi myötäpäivään kulkevaksi kolmioksi
+    std::vector<uint16_t> indices = {
+        0, 1, 2,  // Ensimmäinen kolmio (Vasen ylä -> Oikea ylä -> Oikea ala)
+        2, 3, 0   // Toinen kolmio (Oikea ala -> Vasen ala -> Vasen ylä)
+    };
+
+    VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+
+    // 1. Luodaan puskuri-objekti indekseille
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT; // <-- Tärkeä: Indeksipuskuri
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    chk(vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_indexBuffer));
+
+    // 2. Pyydetään muistivaatimukset ja varataan muisti GPU:lta
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(m_device, m_indexBuffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    chk(vkAllocateMemory(m_device, &allocInfo, nullptr, &m_indexBufferMemory));
+    vkBindBufferMemory(m_device, m_indexBuffer, m_indexBufferMemory, 0);
+
+    // 3. Kopioidaan indeksidata muistiin
+    void* data;
+    vkMapMemory(m_device, m_indexBufferMemory, 0, bufferSize, 0, &data);
+    memcpy(data, indices.data(), (size_t)bufferSize);
+    vkUnmapMemory(m_device, m_indexBufferMemory);
+}
+
+void VulkanRenderer::createUniformBuffer() {
+    VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+
+    // Luodaan puskuri (Usage on UNIFORM_BUFFER_BIT)
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    chk(vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_uniformBuffer));
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(m_device, m_uniformBuffer, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    chk(vkAllocateMemory(m_device, &allocInfo, nullptr, &m_uniformBufferMemory));
+    vkBindBufferMemory(m_device, m_uniformBuffer, m_uniformBufferMemory, 0);
+}
+
+void VulkanRenderer::createDescriptorPool() {
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSize.descriptorCount = 1;
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 1;
+
+    chk(vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &m_descriptorPool));
+}
+
+void VulkanRenderer::createDescriptorSets() {
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = m_descriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &m_descriptorSetLayout;
+
+    chk(vkAllocateDescriptorSets(m_device, &allocInfo, &m_descriptorSet));
+
+    // Kytketään meidän fyysinen Uniform Buffer tähän Descriptor Setiin
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = m_uniformBuffer;
+    bufferInfo.offset = 0;
+    bufferInfo.range = sizeof(UniformBufferObject);
+
+    VkWriteDescriptorSet descriptorWrite{};
+    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrite.dstSet = m_descriptorSet;
+    descriptorWrite.dstBinding = 0;
+    descriptorWrite.dstArrayElement = 0;
+    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    descriptorWrite.descriptorCount = 1;
+    descriptorWrite.pBufferInfo = &bufferInfo;
+
+    vkUpdateDescriptorSets(m_device, 1, &descriptorWrite, 0, nullptr);
+}
+
+void VulkanRenderer::updateUniformBuffer() {
+	static auto startTime = std::chrono::high_resolution_clock::now();
+	auto currentTime = std::chrono::high_resolution_clock::now();
+	float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+	UniformBufferObject ubo{};
+	ubo.transform = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));// Tässä luodaan yksinkertainen transformaatio, joka pyörittää kolmion Z-akselin ympäri ajan funktiona. Tämä tekee siitä elävämmän ja havainnollistaa, miten uniform-muuttujat voivat vaikuttaa renderöintiin reaaliajassa.
+    
+	//ja kopioidaan data GPU:lle
+    void* data;
+	// Vulkan vaatii, että kartta- ja kopiointivaiheet tehdään erikseen, jotta se voi optimoida muistinkäyttöä ja suorituskykyä. Kartta- ja kopiointivaiheet voivat olla kalliita, joten on tärkeää tehdä ne vain silloin, kun data todella muuttuu (esim. joka frame päivitettävät matriisit).
+	vkMapMemory(m_device, m_uniformBufferMemory, 0, sizeof(ubo), 0, &data);
+	memcpy(data, &ubo, sizeof(ubo));//kopioidaan ubo-structin data kartattuun muistiosoitteeseen
+	vkUnmapMemory(m_device, m_uniformBufferMemory);//vapautetaan kartta, jotta GPU voi käyttää sitä uudestaan
+}
+
 void VulkanRenderer::cleanup() {
     // Tuhoa grafiikkaputki ja sen layout
     if (m_graphicsPipeline != VK_NULL_HANDLE) {
@@ -807,8 +1019,33 @@ void VulkanRenderer::cleanup() {
     if (m_inFlightFence != VK_NULL_HANDLE) {
         vkDestroyFence(m_device, m_inFlightFence, nullptr);
     }
+    
+    if (m_descriptorPool != VK_NULL_HANDLE) 
+        vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
+
+    if (m_descriptorSetLayout != VK_NULL_HANDLE) 
+        vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
+    
+    if (m_uniformBuffer != VK_NULL_HANDLE) 
+        vkDestroyBuffer(m_device, m_uniformBuffer, nullptr);
+    
+    if (m_uniformBufferMemory != VK_NULL_HANDLE) 
+        vkFreeMemory(m_device, m_uniformBufferMemory, nullptr);
+    
     for (auto framebuffer : m_swapChainFramebuffers) {
         vkDestroyFramebuffer(m_device, framebuffer, nullptr);
+    }
+    if (m_indexBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(m_device, m_indexBuffer, nullptr);
+    }
+    if (m_indexBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_device, m_indexBufferMemory, nullptr);
+    }
+    if (m_vertexBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(m_device, m_vertexBuffer, nullptr);
+    }
+    if (m_vertexBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_device, m_vertexBufferMemory, nullptr);
     }
 	//tuhota looginen laite (Device) 
 	if (m_device != VK_NULL_HANDLE) {
@@ -821,4 +1058,4 @@ void VulkanRenderer::cleanup() {
     
 	std::cout << "Vulkan-resurssit tuhottu onnistuneesti!" << std::endl;
 
-}
+} 
