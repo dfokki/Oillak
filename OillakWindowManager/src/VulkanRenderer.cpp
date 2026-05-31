@@ -21,7 +21,7 @@ void VulkanRenderer::initVulkan() {
     createSurface();
   
 	pickPhysicalDevice(); //etsitään fyysinen laite, joka tukee Vulkania
-	createLogicalDevice(); //TODO: luodaan looginen laite, joka kommunikoi fyysisen laitteen kanssa
+	createLogicalDevice(); 
     createSwapChain();
     createImageViews();
 	createRenderpass();
@@ -42,76 +42,112 @@ void VulkanRenderer::initVulkan() {
     
 }
 void VulkanRenderer::drawFrame() {
-    // 1. Odotetaan, että edellinen ruutu on piirretty valmiiksi (CPU odottaa)
-    vkWaitForFences(m_device, 1, &m_inFlightFence, VK_TRUE, UINT64_MAX);
-    
-	updateUniformBuffer(); // Päivitetään uniform buffer, jotta voimme muuttaa objektien sijaintia, kokoa ja suuntaa ikkunassa joka framella
-    // Lukitaan aita uudelleen tätä framea varten
-    vkResetFences(m_device, 1, &m_inFlightFence);
+    // 1. Odotetaan, että GPU on valmis tämän framen (m_currentFrame) työlle
+    vkWaitForFences(m_device, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
 
-    // 2. Pyydetään Swapchainilta seuraava vapaa kuva
+    // 2. Kysytään swapchainilta, mikä kuva on vapaana piirrettäväksi
     uint32_t imageIndex;
-    vkAcquireNextImageKHR(m_device, m_swapChain, UINT64_MAX, m_imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+    VkResult result = vkAcquireNextImageKHR(m_device, m_swapChain, UINT64_MAX,
+        m_imageAvailableSemaphores[m_currentFrame],
+        VK_NULL_HANDLE, &imageIndex);
 
-    // 3. Nollataan ja nauhoitetaan komentopuskuri uusiksi
-    vkResetCommandBuffer(m_commandBuffer, 0);
-    recordCommandBuffer(m_commandBuffer, imageIndex);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        recreateSwapChain();
+        return;
+    }
+    else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        throw std::runtime_error("failed to acquire swap chain image!");
+    }
 
-    // 4. Määritetään, miten komennot lähetetään näytönohjaimelle
+    // Defensive check: ensure m_imagesInFlight matches swapchain image count
+    if (imageIndex >= m_imagesInFlight.size()) {
+        // Swapchain state unexpected; recreate and skip this frame
+        recreateSwapChain();
+        return;
+    }
+
+    // 3. TÄRKEÄÄ: Tarkistetaan, onko kyseinen swapchain-kuva jo käytössä (fence).
+    // Jos on, odotamme sen valmistumista ennen kuin jatkamme.
+    if (m_imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+        vkWaitForFences(m_device, 1, &m_imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+    }
+    // Merkitään tämä kuva varatuksi tämän hetkisellä aidalla
+    m_imagesInFlight[imageIndex] = m_inFlightFences[m_currentFrame];
+
+    // Nollataan aita vasta nyt
+    vkResetFences(m_device, 1, &m_inFlightFences[m_currentFrame]);
+
+    // 4. Päivitetään UBO:t
+    updateUniformBuffer(m_currentFrame);
+
+    // Defensive synchronization checks to avoid out-of-range semaphore access.
+    // If synchronization arrays are not in the expected state (e.g. after a swapchain change),
+    // recreate the swapchain and skip this frame to avoid undefined behavior.
+    if (m_imageAvailableSemaphores.size() <= m_currentFrame || m_renderFinishedSemaphores.size() <= imageIndex) {
+        recreateSwapChain();
+        return;
+    }
+
+    // 5. Resetoidaan ja nauhoitetaan komentopuskuri
+    vkResetCommandBuffer(m_commandBuffers[m_currentFrame], 0);
+    recordCommandBuffer(m_commandBuffers[m_currentFrame], imageIndex);
+
+    // 6. Submit-tietojen määrittely
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    // Odota, että kuva on oikeasti saatavilla ennen kuin aletaan kirjoittaa siihen värejä
-    VkSemaphore waitSemaphores[] = { m_imageAvailableSemaphore };
+    VkSemaphore waitSemaphores[] = { m_imageAvailableSemaphores[m_currentFrame] };
     VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
     submitInfo.waitSemaphoreCount = 1;
     submitInfo.pWaitSemaphores = waitSemaphores;
     submitInfo.pWaitDstStageMask = waitStages;
 
-    // Mitä lähetetään
     submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &m_commandBuffer;
+    submitInfo.pCommandBuffers = &m_commandBuffers[m_currentFrame];
 
-    // Mitä semaforea signaaloidaan, kun piirtäminen on valmis
-    VkSemaphore signalSemaphores[] = { m_renderFinishedSemaphore };
+    // Use a per-swapchain-image render-finished semaphore to avoid reusing the same semaphore
+    // across multiple images. This semaphore corresponds to the imageIndex we are presenting.
+    VkSemaphore signalSemaphores[] = { m_renderFinishedSemaphores[imageIndex] };
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
-    // 5. LÄHETETÄÄN KOMENNOT GPU:lle! (Samalla avataan aita, kun työ on valmis)
-    if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFence) != VK_SUCCESS) {
+    if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_inFlightFences[m_currentFrame]) != VK_SUCCESS) {
         throw std::runtime_error("Virhe: Komentopuskurin lähetys jonoon epäonnistui!");
     }
 
-    // 6. Näytetään valmis kuva ruudulla
+    // 7. Esittäminen (Present)
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = signalSemaphores; // Odota, että renderöinti on valmis
+    presentInfo.pWaitSemaphores = signalSemaphores;
 
     VkSwapchainKHR swapChains[] = { m_swapChain };
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = swapChains;
     presentInfo.pImageIndices = &imageIndex;
 
-    vkQueuePresentKHR(m_presentQueue, &presentInfo);
-}
-void VulkanRenderer::createSyncObjects() {
-    VkSemaphoreCreateInfo semaphoreInfo{};
-    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    // Wait on the per-image render finished semaphore that was signaled by the submit
+    VkSemaphore presentWaitSemaphores[] = { m_renderFinishedSemaphores[imageIndex] };
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = presentWaitSemaphores;
 
-    VkFenceCreateInfo fenceInfo{};
-    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    // TÄRKEÄÄ: Aita luodaan valmiiksi "avattuun" tilaan, jotta ensimmäinen frame 
-    // ei jää ikuisesti odottamaan aiempaa, olematonta framea.
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    result = vkQueuePresentKHR(m_presentQueue, &presentInfo);
 
-    if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_imageAvailableSemaphore) != VK_SUCCESS ||
-        vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_renderFinishedSemaphore) != VK_SUCCESS ||
-        vkCreateFence(m_device, &fenceInfo, nullptr, &m_inFlightFence) != VK_SUCCESS) {
-        throw std::runtime_error("Virhe: Synkronointiobjektien luonti epäonnistui!");
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+        recreateSwapChain();
     }
+    else if (result != VK_SUCCESS) {
+        throw std::runtime_error("failed to present swap chain image!");
+    }
+
+    // Siirrytään seuraavaan vuoroon
+    m_currentFrame = (m_currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
+
 void VulkanRenderer::createInstance() {
+    const std::vector<const char*> validationLayers = {
+    "VK_LAYER_KHRONOS_validation"
+    };
     // 1. Sovelluksen tiedot
     VkApplicationInfo appInfo{};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -138,8 +174,9 @@ void VulkanRenderer::createInstance() {
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.ppEnabledExtensionNames = extensions.data();
 
-    // Validation layerit lisätään myöhemmin tutoriaalin edetessä
-    createInfo.enabledLayerCount = 0;
+	// 4. Valinnaiset validointikerrokset (debuggausta varten)
+    createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
+    createInfo.ppEnabledLayerNames = validationLayers.data();
 
     // 4. Luodaan itse instanssi ja tarkistetaan virheet
     if (vkCreateInstance(&createInfo, nullptr, &m_instance) != VK_SUCCESS) {
@@ -225,6 +262,9 @@ void VulkanRenderer::createSwapChain()
     chk(vkGetSwapchainImagesKHR(m_device, m_swapChain, &imageCount, nullptr));
     m_swapChainImages.resize(imageCount);
     chk(vkGetSwapchainImagesKHR(m_device, m_swapChain, &imageCount, m_swapChainImages.data()));
+
+    // Ensure m_imagesInFlight is sized to number of swapchain images
+    m_imagesInFlight.assign(m_swapChainImages.size(), VK_NULL_HANDLE);
 
     m_swapChainImageFormat = surfaceFormat.format;
     m_swapChainExtent = extent;
@@ -489,8 +529,8 @@ void VulkanRenderer::createRenderpass() {
 	colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT; // Ei multisamplingia (antialiasing)
 	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // Tyhjennetään kuva joka kerta ennen piirtämistä
 	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; // Tallennetaan piirrettävä kuva muistiin esitystä varten
-	colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // Emme käytä stenciliä, joten ei väliä
-	colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; // Emme käytä stenciliä, joten ei väliä
+	colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // Emme käytä stenceliä, joten ei väliä
+	colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; // Emme käytä stenceliä, joten ei väliä
 	colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // Alkuperäinen layout ei merkitse mitään, koska tyhjennämme sen joka kerta
 	colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; // Lopullinen layout on esityskelpoinen, jotta voimme näyttää sen ikkunassa
 	VkAttachmentReference colorAttachmentRef{};
@@ -560,56 +600,52 @@ static std::vector<char> readFile(const std::string& filename) {
     return buffer;
 }
 void VulkanRenderer::createGraphicsPipeline() {
-    
-        std::printf("Aloitetaan grafiikkaputken (Graphics Pipeline) alustus...\n");
+    std::printf("Luodaan grafiikkaputkea...\n");
 
-        // === 1. LADATAAN SHADER-BINÄÄRIT SISÄÄN ===
-        auto vertShaderCode = readFile("vert.spv");
-        auto fragShaderCode = readFile("frag.spv");
+    // 1. Shaderien lataus
+    auto vertShaderCode = readFile("vert.spv");
+    auto fragShaderCode = readFile("frag.spv");
 
-        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+    VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+    VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
 
-        // Määritellään Vertex Shaderin vaihe putkelle
-        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-        vertShaderStageInfo.module = vertShaderModule;
-        vertShaderStageInfo.pName = "main"; // Funktion nimi shaderissa
+    VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+    vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertShaderStageInfo.module = vertShaderModule;
+    vertShaderStageInfo.pName = "main";
 
-        // Määritellään Fragment Shaderin vaihe putkelle
-        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        fragShaderStageInfo.module = fragShaderModule;
-        fragShaderStageInfo.pName = "main";
+    VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+    fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragShaderStageInfo.module = fragShaderModule;
+    fragShaderStageInfo.pName = "main";
 
-        VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
-		
-        auto bindingDescription = Vertex::getBindingDescription();
-        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+    VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+
+    // 2. Vertex Input
+    auto bindingDescription = Vertex::getBindingDescription();
+    auto attributeDescriptions = Vertex::getAttributeDescriptions();
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.vertexBindingDescriptionCount = 1;
     vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-	vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
     vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
-    // 2. Input Assembly - Vaihe (Miten pisteet yhdistetään geometriaksi)
+    // 3. Input Assembly
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; // Piirretään kolmioita
+    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     inputAssembly.primitiveRestartEnable = VK_FALSE;
 
-    // 3. Viewport ja Scissor (Mille alueelle ikkunassa piirretään)
+    // 4. Viewport & Scissor
     VkViewport viewport{};
-    viewport.x = 0.0f;
-    viewport.y = 0.0f;
+    viewport.x = 0.0f; viewport.y = 0.0f;
     viewport.width = (float)m_swapChainExtent.width;
     viewport.height = (float)m_swapChainExtent.height;
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
+    viewport.minDepth = 0.0f; viewport.maxDepth = 1.0f;
 
     VkRect2D scissor{};
     scissor.offset = { 0, 0 };
@@ -617,32 +653,30 @@ void VulkanRenderer::createGraphicsPipeline() {
 
     VkPipelineViewportStateCreateInfo viewportState{};
     viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.viewportCount = 1;
-    viewportState.pViewports = &viewport;
-    viewportState.scissorCount = 1;
-    viewportState.pScissors = &scissor;
+    viewportState.viewportCount = 1; viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1; viewportState.pScissors = &scissor;
 
-    // 4. Rasterizer - Rasterointivaihe (Muuttaa geometriapisteet pikseleiksi)
+    // 5. Rasterizer
     VkPipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.depthClampEnable = VK_FALSE;
-    rasterizer.rasterizerDiscardEnable = VK_FALSE; // Sallitaan piirtäminen ruudulle
-    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;  // Täytetään kolmio (vaihtoehtona esim. VK_POLYGON_MODE_LINE)
+    rasterizer.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;    // Karsitaan kolmion takapuolet tehon säästämiseksi
-    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE; // Kolmion pisteiden suunta myötäpäivään
+    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
-    // 5. Multisampling (Reunanpehmennys - pidetään pois päältä toistaiseksi)
+    // 6. Multisampling
     VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisampling.sampleShadingEnable = VK_FALSE;
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-    // 6. Color Blending - Värien sekoitus (Miten uusi pikseli sekoittuu vanhaan)
+    // 7. Color Blending
     VkPipelineColorBlendAttachmentState colorBlendAttachment{};
     colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = VK_FALSE; // Ei läpinäkyvyyttä vielä tässä vaiheessa
+    colorBlendAttachment.blendEnable = VK_FALSE;
 
     VkPipelineColorBlendStateCreateInfo colorBlending{};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -650,51 +684,42 @@ void VulkanRenderer::createGraphicsPipeline() {
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &colorBlendAttachment;
 
-    // 7. Pipeline Layoutin luonti (Tähän määritellään myöhemmin Uniform-muuttujat/matriisit)
+    // 8. Pipeline Layout
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &m_descriptorSetLayout;
-    pipelineLayoutInfo.pushConstantRangeCount = 0;
-    pipelineLayoutInfo.pPushConstantRanges = nullptr;
 
-	chk(vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout));
+    if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS) {
+        throw std::runtime_error("Virhe: Pipeline Layoutin luonti epäonnistui!");
+    }
 
-    // === 2. LUODAAN ITSE GRAFIIKKAPUTKI ===
+    // 9. Graphics Pipeline luonti
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineInfo.stageCount = 2;
-    pipelineInfo.pStages = shaderStages; // Kytketään meidän shader-vaiheet mukaan!
-
-    // Kytketään aiemmin luodut kiinteät asetukset
+    pipelineInfo.pStages = shaderStages;
     pipelineInfo.pVertexInputState = &vertexInputInfo;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;
-    pipelineInfo.pDepthStencilState = nullptr; // Ei syvyystestiä vielä
+    pipelineInfo.pDepthStencilState = nullptr; // Jos lisäät syvyyspuskurin myöhemmin, tämä muuttuu
     pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = nullptr; // Ei dynaamisia tiloja vielä
+    pipelineInfo.layout = m_pipelineLayout;
+    pipelineInfo.renderPass = m_renderPass;
+    pipelineInfo.subpass = 0;
+    pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
-    pipelineInfo.layout = m_pipelineLayout; // Kytketään layout
-    pipelineInfo.renderPass = m_renderPass; // Kytketään Render Pass, johon putkea käytetään
-    pipelineInfo.subpass = 0;               // Subpassin indeksi
-
-    pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Ei käytetä pohjaputkia optimointiin
-    pipelineInfo.basePipelineIndex = -1;
-
-    // Luodaan itse putki!
     if (vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_graphicsPipeline) != VK_SUCCESS) {
-        throw std::runtime_error("Virhe: Grafiikkaputken (Graphics Pipeline) luonti epäonnistui!");
+        throw std::runtime_error("Virhe: Grafiikkaputken luonti epäonnistui!");
     }
 
-    std::printf("...Grafiikkaputki luotu onnistuneesti!\n");
-
-    // === 3. TUHOTAAN SHADER MODUULIT ===
-    // Kun putki on luotu, näytönohjain on kääntänyt koodin omalle konekielelleen. 
-    // Väliaikaisia VkShaderModule-kahvoja ei enää tarvita, joten ne tuhotaan heti funktion lopussa.
+    // 10. Siivous: Shader-moduuleja ei enää tarvita, kun putki on luotu
     vkDestroyShaderModule(m_device, fragShaderModule, nullptr);
     vkDestroyShaderModule(m_device, vertShaderModule, nullptr);
+
+    std::printf("...Grafiikkaputki luotu onnistuneesti!\n");
 }
 void VulkanRenderer::createCommandPool() {
     QueueFamilyIndices queueFamilyIndices = findQueueFamilies(m_physicalDevice); // Tarvitset tämän apufunktion
@@ -708,17 +733,19 @@ void VulkanRenderer::createCommandPool() {
         throw std::runtime_error("Virhe: Command Poolin luonti epäonnistui!");
     }
 }
+
 void VulkanRenderer::createCommandBuffer() {
+    m_commandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     allocInfo.commandPool = m_commandPool;
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
+    allocInfo.commandBufferCount = (uint32_t)m_commandBuffers.size();
 
-    if (vkAllocateCommandBuffers(m_device, &allocInfo, &m_commandBuffer) != VK_SUCCESS) {
-        throw std::runtime_error("Virhe: Command Bufferin luonti epäonnistui!");
-    }
+    chk(vkAllocateCommandBuffers(m_device, &allocInfo, m_commandBuffers.data()));
 }
+
 void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -750,7 +777,8 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, m_indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
-	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_descriptorSet, 0, nullptr);
+    // Muuta tämä yksi rivi recordCommandBuffer-funktiossa:
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_descriptorSets[m_currentFrame], 0, nullptr);
     // Piirretään 6 indeksiä (eli 2 kolmiota), 1 instanssi, alkaen indeksistä 0 jne.
     vkCmdDrawIndexed(commandBuffer, 6, 1, 0, 0, 0);
     // 4. Lopetetaan Render Pass
@@ -894,86 +922,162 @@ void VulkanRenderer::createIndexBuffer() {
     memcpy(data, indices.data(), (size_t)bufferSize);
     vkUnmapMemory(m_device, m_indexBufferMemory);
 }
+void VulkanRenderer::createSyncObjects() {
+    // Aidat pysyvät entisellään (Frames in Flight)
+    m_inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
 
+    // Semaforit: luodaan swapchain-kuvien määrän mukaan
+    size_t imageCount = m_swapChainImages.size();
+    m_imageAvailableSemaphores.resize(imageCount);
+    m_renderFinishedSemaphores.resize(imageCount);
+    m_inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+
+    VkSemaphoreCreateInfo semaphoreInfo{};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    // Luodaan semaforit jokaiselle kuvalle
+    for (size_t i = 0; i < imageCount; i++) {
+        if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_imageAvailableSemaphores[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_renderFinishedSemaphores[i]) != VK_SUCCESS) {
+            throw std::runtime_error("Virhe: Semaforien luonti epäonnistui!");
+        }
+    }
+
+    // Luodaan aidat (Frames in Flight)
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (vkCreateFence(m_device, &fenceInfo, nullptr, &m_inFlightFences[i]) != VK_SUCCESS) {
+            throw std::runtime_error("Virhe: Aitapuskurien luonti epäonnistui!");
+        }
+    }
+}
 void VulkanRenderer::createUniformBuffer() {
     VkDeviceSize bufferSize = sizeof(UniformBufferObject);
 
-    // Luodaan puskuri (Usage on UNIFORM_BUFFER_BIT)
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = bufferSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    m_uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+    m_uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
+    m_uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
 
-    chk(vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_uniformBuffer));
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(m_device, m_uniformBuffer, &memRequirements);
+        chk(vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_uniformBuffers[i]));
 
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(m_device, m_uniformBuffers[i], &memRequirements);
 
-    chk(vkAllocateMemory(m_device, &allocInfo, nullptr, &m_uniformBufferMemory));
-    vkBindBufferMemory(m_device, m_uniformBuffer, m_uniformBufferMemory, 0);
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+        chk(vkAllocateMemory(m_device, &allocInfo, nullptr, &m_uniformBuffersMemory[i]));
+        vkBindBufferMemory(m_device, m_uniformBuffers[i], m_uniformBuffersMemory[i], 0);
+
+        // Kartoitetaan muisti pysyvästi! GPU/CPU-yhteys on nyt aina auki.
+        vkMapMemory(m_device, m_uniformBuffersMemory[i], 0, bufferSize, 0, &m_uniformBuffersMapped[i]);
+    }
 }
 
 void VulkanRenderer::createDescriptorPool() {
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSize.descriptorCount = 1;
+    poolSize.descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT); // Poolin koko on nyt 2
 
     chk(vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &m_descriptorPool));
 }
 
 void VulkanRenderer::createDescriptorSets() {
+    std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, m_descriptorSetLayout);
+
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = m_descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &m_descriptorSetLayout;
+    allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+    allocInfo.pSetLayouts = layouts.data();
 
-    chk(vkAllocateDescriptorSets(m_device, &allocInfo, &m_descriptorSet));
+    m_descriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
+    chk(vkAllocateDescriptorSets(m_device, &allocInfo, m_descriptorSets.data()));
 
-    // Kytketään meidän fyysinen Uniform Buffer tähän Descriptor Setiin
-    VkDescriptorBufferInfo bufferInfo{};
-    bufferInfo.buffer = m_uniformBuffer;
-    bufferInfo.offset = 0;
-    bufferInfo.range = sizeof(UniformBufferObject);
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = m_uniformBuffers[i];
+        bufferInfo.offset = 0;
+        bufferInfo.range = sizeof(UniformBufferObject);
 
-    VkWriteDescriptorSet descriptorWrite{};
-    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrite.dstSet = m_descriptorSet;
-    descriptorWrite.dstBinding = 0;
-    descriptorWrite.dstArrayElement = 0;
-    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    descriptorWrite.descriptorCount = 1;
-    descriptorWrite.pBufferInfo = &bufferInfo;
+        VkWriteDescriptorSet descriptorWrite{};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = m_descriptorSets[i];
+        descriptorWrite.dstBinding = 0;
+        descriptorWrite.dstArrayElement = 0;
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pBufferInfo = &bufferInfo;
 
-    vkUpdateDescriptorSets(m_device, 1, &descriptorWrite, 0, nullptr);
+        vkUpdateDescriptorSets(m_device, 1, &descriptorWrite, 0, nullptr);
+    }
 }
 
-void VulkanRenderer::updateUniformBuffer() {
-	static auto startTime = std::chrono::high_resolution_clock::now();
-	auto currentTime = std::chrono::high_resolution_clock::now();
-	float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
-	UniformBufferObject ubo{};
-	ubo.transform = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));// Tässä luodaan yksinkertainen transformaatio, joka pyörittää kolmion Z-akselin ympäri ajan funktiona. Tämä tekee siitä elävämmän ja havainnollistaa, miten uniform-muuttujat voivat vaikuttaa renderöintiin reaaliajassa.
-    
-	//ja kopioidaan data GPU:lle
-    void* data;
-	// Vulkan vaatii, että kartta- ja kopiointivaiheet tehdään erikseen, jotta se voi optimoida muistinkäyttöä ja suorituskykyä. Kartta- ja kopiointivaiheet voivat olla kalliita, joten on tärkeää tehdä ne vain silloin, kun data todella muuttuu (esim. joka frame päivitettävät matriisit).
-	vkMapMemory(m_device, m_uniformBufferMemory, 0, sizeof(ubo), 0, &data);
-	memcpy(data, &ubo, sizeof(ubo));//kopioidaan ubo-structin data kartattuun muistiosoitteeseen
-	vkUnmapMemory(m_device, m_uniformBufferMemory);//vapautetaan kartta, jotta GPU voi käyttää sitä uudestaan
+void VulkanRenderer::updateUniformBuffer(uint32_t currentFrame){
+    static auto startTime = std::chrono::high_resolution_clock::now();
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+
+    UniformBufferObject ubo{};
+    ubo.transform = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+
+    // Kopioidaan suoraan tämänhetkisen framen valmiiksi avattuun muistiputkeen!
+    memcpy(m_uniformBuffersMapped[m_currentFrame], &ubo, sizeof(ubo));
+}
+void VulkanRenderer::recreateSwapChain() {
+    // 1. Käsittele minimointi: jos ikkunan koko on 0, odota
+    int width = 0, height = 0;
+    while (width == 0 || height == 0) {
+        // Tässä pitäisi kutsua ikkunakirjastosi (esim. glfw) funktio:
+        // glfwGetFramebufferSize(m_window.handle, &width, &height);
+        // glfwWaitEvents();
+    }
+
+    // 2. Varmista, että GPU on valmis ennen tuhoamista
+    vkDeviceWaitIdle(m_device);
+
+    // 3. Tuhoa vanhat resurssit
+    cleanupSwapChain();
+
+    // 4. Luo uudet resurssit samassa järjestyksessä kuin initVulkanissa
+    createSwapChain();
+    createImageViews();
+    createFramebuffers(); // Tämä on kriittinen, koska se käyttää swapchainin kokoa
+
+    // 5. Resetoi m_imagesInFlight, koska swapchainin kuvien määrä saattoi muuttua
+    m_imagesInFlight.assign(m_swapChainImages.size(), VK_NULL_HANDLE);
+}
+void VulkanRenderer::cleanupSwapChain() {
+    // Tuhoa framebufferit
+    for (auto framebuffer : m_swapChainFramebuffers) {
+        vkDestroyFramebuffer(m_device, framebuffer, nullptr);
+    }
+
+    // Tuhoa image viewit
+    for (auto imageView : m_swapChainImageViews) {
+        vkDestroyImageView(m_device, imageView, nullptr);
+    }
+
+    // Tuhoa itse swapchain
+    vkDestroySwapchainKHR(m_device, m_swapChain, nullptr);
 }
 
 void VulkanRenderer::cleanup() {
@@ -1009,15 +1113,12 @@ void VulkanRenderer::cleanup() {
     if (m_commandPool != VK_NULL_HANDLE) {
         vkDestroyCommandPool(m_device, m_commandPool, nullptr);
     }
-  
-    if (m_renderFinishedSemaphore != VK_NULL_HANDLE) {
-        vkDestroySemaphore(m_device, m_renderFinishedSemaphore, nullptr);
+    for (size_t i = 0; i < m_imageAvailableSemaphores.size(); i++) {
+        vkDestroySemaphore(m_device, m_imageAvailableSemaphores[i], nullptr);
+        vkDestroySemaphore(m_device, m_renderFinishedSemaphores[i], nullptr);
     }
-    if (m_imageAvailableSemaphore != VK_NULL_HANDLE) {
-        vkDestroySemaphore(m_device, m_imageAvailableSemaphore, nullptr);
-    }
-    if (m_inFlightFence != VK_NULL_HANDLE) {
-        vkDestroyFence(m_device, m_inFlightFence, nullptr);
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        vkDestroyFence(m_device, m_inFlightFences[i], nullptr);
     }
     
     if (m_descriptorPool != VK_NULL_HANDLE) 
@@ -1026,11 +1127,10 @@ void VulkanRenderer::cleanup() {
     if (m_descriptorSetLayout != VK_NULL_HANDLE) 
         vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
     
-    if (m_uniformBuffer != VK_NULL_HANDLE) 
-        vkDestroyBuffer(m_device, m_uniformBuffer, nullptr);
-    
-    if (m_uniformBufferMemory != VK_NULL_HANDLE) 
-        vkFreeMemory(m_device, m_uniformBufferMemory, nullptr);
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        vkDestroyBuffer(m_device, m_uniformBuffers[i], nullptr);
+        vkFreeMemory(m_device, m_uniformBuffersMemory[i], nullptr);
+    }
     
     for (auto framebuffer : m_swapChainFramebuffers) {
         vkDestroyFramebuffer(m_device, framebuffer, nullptr);

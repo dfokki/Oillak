@@ -1,0 +1,1 @@
+Applying resize for m_imagesInFlight in createSwapChain/recreateSwapChain and ensuring initialization.
