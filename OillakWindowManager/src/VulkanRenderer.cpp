@@ -693,7 +693,15 @@ void VulkanRenderer::createGraphicsPipeline() {
     if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS) {
         throw std::runtime_error("Virhe: Pipeline Layoutin luonti epäonnistui!");
     }
-
+	//dynaaminen pipeline (esim. dynaamiset viewportit) vaatisi lisää tietoa pipelineInfo-rakenteeseen, mutta tässä vaiheessa pidetään se yksinkertaisena ja kiinteänä, jotta päästään nopeammin alkuun renderöinnissä.
+	std::vector<VkDynamicState> dynamicStates = {
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_SCISSOR
+	};
+	VkPipelineDynamicStateCreateInfo dynamicStateInfo{};
+	dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+	dynamicStateInfo.pDynamicStates = dynamicStates.data();
     // 9. Graphics Pipeline luonti
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -704,6 +712,7 @@ void VulkanRenderer::createGraphicsPipeline() {
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;
+	pipelineInfo.pDynamicState = dynamicStates.data() ? &dynamicStateInfo : nullptr; // Käytä dynaamista tilaa, jos määritetty
     pipelineInfo.pDepthStencilState = nullptr; // Jos lisäät syvyyspuskurin myöhemmin, tämä muuttuu
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.layout = m_pipelineLayout;
@@ -770,6 +779,21 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
 
     // 2. Kytketään Graphics Pipeline
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline);
+
+    //F1-resizing
+	VkViewport viewport{};
+	viewport.x = 0.0f; viewport.y = 0.0f;
+	viewport.width = (float)m_swapChainExtent.width;
+	viewport.height = (float)m_swapChainExtent.height;
+	viewport.minDepth = 0.0f; viewport.maxDepth = 1.0f;
+	viewport.maxDepth = 1.0f;
+	vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+	VkRect2D scissor{};
+	scissor.offset = { 0, 0 };// Scissor-alue on sama kuin viewport, mutta se voidaan määritellä erikseen, jos halutaan rajata renderöinti tiettyyn osaan ikkunaa
+	scissor.extent = m_swapChainExtent;
+	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);//
+
     //Sidotaan Vertex Buffer binding-paikkaan 0
     VkBuffer vertexBuffers[] = { m_vertexBuffer };
     VkDeviceSize offsets[] = { 0 };
@@ -1036,19 +1060,29 @@ void VulkanRenderer::updateUniformBuffer(uint32_t currentFrame){
     auto currentTime = std::chrono::high_resolution_clock::now();
     float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
 
+	//otetaan huomioo aspect ratio , jotta kolmio ei veny väärän kokoiseksi ikkunan muuttuessa
+	float aspectRatio = static_cast<float>(m_swapChainExtent.width) / static_cast<float>(m_swapChainExtent.height);
+
     UniformBufferObject ubo{};
+
     ubo.transform = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
+	//luodaan 2d orthographic-projektio, joka ottaa huomioon ikkunan aspect ration, jotta kolmio ei veny väärän kokoiseksi ikkunan muuttuessa
+	//taämä skaalaa X-akselia siten että näyttää oikean kokoiselta riippumatta ikkunan koosta
+	glm::mat4 ortho = glm::ortho(-aspectRatio, aspectRatio, -1.0f, 1.0f);
+	// yhdistetään matriisit (GLM/Vulkan laskee oikealta vasemmalle, joten ortho on ensin)
+	 ubo.transform = ortho * ubo.transform; // Projektio * Malli (Model)
     // Kopioidaan suoraan tämänhetkisen framen valmiiksi avattuun muistiputkeen!
     memcpy(m_uniformBuffersMapped[m_currentFrame], &ubo, sizeof(ubo));
 }
 void VulkanRenderer::recreateSwapChain() {
     // 1. Käsittele minimointi: jos ikkunan koko on 0, odota
     int width = 0, height = 0;
+	m_window.getFramebufferSize(width, height); 
+
     while (width == 0 || height == 0) {
-        // Tässä pitäisi kutsua ikkunakirjastosi (esim. glfw) funktio:
-        // glfwGetFramebufferSize(m_window.handle, &width, &height);
-        // glfwWaitEvents();
+		m_window.getFramebufferSize(width, height);
+		m_window.waitEvents();
     }
 
     // 2. Varmista, että GPU on valmis ennen tuhoamista
