@@ -8,7 +8,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <chrono>
-
+#include "tools/OillakLogger.h"
 //Tätä matriisia käytetään vertex shaderissä, jotta voimme muuttaa objektien sijaintia, kokoa ja suuntaa ikkunassa.
 struct UniformBufferObject {
 	glm::mat4 transform; // Yleinen muunnosmatriisi, joka sisältää käännös-, kierto- ja skaalaustiedot.
@@ -16,8 +16,10 @@ struct UniformBufferObject {
 };
 class VulkanRenderer {
 public:
+	//ainakin loggeri tarvitsee tietää, montako kolmiota piirretään, jotta se voi logata sen suorituskykytiedostoon. Tässä tapauksessa meillä on vain yksi neliö, joka koostuu kahdesta kolmiosta, joten palautetaan 2.
+    uint32_t getTriangleCount() const { return 2; }
     // Konstruktori ottaa vastaan viitteen luomaasi ikkunaan
-    VulkanRenderer(window& appWindow, uint32_t deviceIndex);
+    VulkanRenderer(window& appWindow, uint32_t deviceIndex, OillakLogger* logger);
     ~VulkanRenderer();
 
     // Estetään kopiointi (Vulkan-resurssien tuplatuhoamisen estämiseksi)
@@ -30,7 +32,7 @@ public:
 private:
     window& m_window;
     uint32_t m_preferredDeviceIndex;
-    
+    OillakLogger* m_logger = nullptr;
     // Vulkanin ydinoliot
 	// Vulkanin instanssi on kuin "Vulkanin pääkonttori". Se on ensimmäinen objekti, joka luodaan, ja se hallitsee kaikkea Vulkanin toimintaa.
     VkInstance m_instance = VK_NULL_HANDLE;

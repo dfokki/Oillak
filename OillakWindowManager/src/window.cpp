@@ -1,7 +1,9 @@
 #include "window.h"
 #include <stdexcept>
 
-window::window(int width, int height, const std::wstring& title) {
+window::window(int width,int height, const std::wstring& title) {
+	m_height = height;
+	m_width = width;
     hInstance = GetModuleHandle(nullptr);
 
     WNDCLASS wc{};

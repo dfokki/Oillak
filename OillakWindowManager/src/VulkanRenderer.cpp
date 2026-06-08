@@ -7,8 +7,9 @@
 #include <cassert>
 #include <algorithm>
 #include <limits>
+#include "tools/OillakLogger.h"
+VulkanRenderer::VulkanRenderer(window& appWindow, uint32_t deviceIndex, OillakLogger* logger) : m_window(appWindow), m_preferredDeviceIndex(deviceIndex), m_logger(logger) {
 
-VulkanRenderer::VulkanRenderer(window& appWindow, uint32_t deviceIndex) : m_window(appWindow), m_preferredDeviceIndex(deviceIndex) {
     initVulkan();
 }
 
@@ -17,12 +18,21 @@ VulkanRenderer::~VulkanRenderer() {
 }
 
 void VulkanRenderer::initVulkan() {
+    if (m_logger) 
+        m_logger->logMessage("Vulkan", "Aloitetaan Vulkanin alustus...");
+
     createInstance();
+    if (m_logger)
+        m_logger->logMessage("Vulkan", "VkInstance luotu onnistuneesti.");
     createSurface();
   
-	pickPhysicalDevice(); //etsitään fyysinen laite, joka tukee Vulkania
-	createLogicalDevice(); //TODO: luodaan looginen laite, joka kommunikoi fyysisen laitteen kanssa
+	pickPhysicalDevice(); 
+	createLogicalDevice();
+
     createSwapChain();
+    if (m_logger) 
+        m_logger->logMessage("Vulkan", "Swapchain luotu resoluutiolle " + std::to_string(m_window.getWidth()) + "x" + std::to_string(m_window.getHeight()));
+
     createImageViews();
 	createRenderpass();
     createFramebuffers();
@@ -145,12 +155,11 @@ void VulkanRenderer::createInstance() {
     if (vkCreateInstance(&createInfo, nullptr, &m_instance) != VK_SUCCESS) {
         throw std::runtime_error("Virhe: Vulkan-instanssin luonti epäonnistui!");
     }
-    std::cout << "Vulkan Instance luotu onnistuneesti!" << std::endl;
 }
 
 void VulkanRenderer::createSurface()
 {
-    std::printf("Luodaan Vulkan Surface...\n");
+    m_logger->logMessage("Vulkan", "Luodaan Vulkan Surface...");
 
     VkWin32SurfaceCreateInfoKHR createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
@@ -162,12 +171,12 @@ void VulkanRenderer::createSurface()
         throw std::runtime_error("Virhe: Ikkunan pinnan (Surface) luonti epäonnistui!");
     }
 
-    std::printf("...Vulkan Surface luotu onnistuneesti!\n");
+    m_logger->logMessage("Vulkan", "...Vulkan Surface luotu onnistuneesti!");
 }
 
 void VulkanRenderer::createSwapChain()
 {
-    std::printf("Luodaan Swapchain...\n");
+    m_logger->logMessage("Vulkan", "Luodaan Swapchain...");
     SwapChainSupportDetails swapChainSupport = querySwapChainSupport(m_physicalDevice);
 
     // Otetaan talteen valitut asetukset apufunktioiden avulla
@@ -228,12 +237,12 @@ void VulkanRenderer::createSwapChain()
 
     m_swapChainImageFormat = surfaceFormat.format;
     m_swapChainExtent = extent;
-
-    std::printf("...Swapchain luotu onnistuneesti! (%d kuvaa käytössä, resoluutio: %dx%d)\n", imageCount, extent.width, extent.height);
+   
+m_logger->logMessage("Vulkan", "...Swapchain luotu onnistuneesti! " , imageCount , " kuvaa käytössä, resoluutio: " , extent.width , "x" , extent.height);
 }
 
 void VulkanRenderer::createImageViews() {
-    std::printf("Luodaan Image Views Swapchain-kuville...\n");
+    m_logger->logMessage("Vulkan", "Luodaan Image Views Swapchain-kuville...");
 
     // Varataan vektorille tilaa saman verran kuin kuvia on
     m_swapChainImageViews.resize(m_swapChainImages.size());
@@ -264,7 +273,7 @@ void VulkanRenderer::createImageViews() {
         }
     }
 
-    std::printf("...Kaikki (%zu kpl) Image View't luotu onnistuneesti!\n", m_swapChainImageViews.size());
+    m_logger->logMessage("Vulkan", "...Kaikki ", m_swapChainImageViews.size()," Image View't luotu onnistuneesti! ");
 }
 
 SwapChainSupportDetails VulkanRenderer::querySwapChainSupport(VkPhysicalDevice device)
@@ -320,13 +329,13 @@ VkPresentModeKHR VulkanRenderer::chooseSwapPresentMode(const std::vector<VkPrese
 {
     for (const auto& presentMode : availablePresentModes) {
         if (presentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
-            std::printf("Käytetään esitystilaa: MAILBOX (Triple-Buffering)\n");
+            m_logger->logMessage("Vulkan", "Käytetään esitystilaa: ", presentMode);
             return presentMode;
         }
     }
 
     // TÄMÄ LISÄYS VARMISTAA FALLBACKIN:
-    std::printf("Käytetään esitystilaa: FIFO (Standard V-Sync)\n");
+    m_logger->logMessage("Vulkan", "Käytetään esitystilaa: ", "VK_PRESENT_MODE_FIFO_KHR");
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
@@ -349,7 +358,7 @@ void VulkanRenderer::pickPhysicalDevice() {
     std::vector<VkPhysicalDevice> devices(deviceCount);
     chk(vkEnumeratePhysicalDevices(m_instance, &deviceCount, devices.data()));
 
-    std::cout << "Huom, " << deviceCount << " olemassa olevaa laitetta, jotka tukevat Vulkania.\n" << std::endl;
+    m_logger->logMessage("Vulkan", "Huom, Vulkania tukevia laitteita on " , deviceCount );
 
     // 1. Kokeillaan ensin komentoriviltä annettua laitetta (jos indeksi on validi)
     if (m_preferredDeviceIndex < deviceCount && isDeviceSuitable(devices[m_preferredDeviceIndex])) {
@@ -374,27 +383,27 @@ void VulkanRenderer::pickPhysicalDevice() {
     VkPhysicalDeviceProperties2 deviceProperties{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
     vkGetPhysicalDeviceProperties2(m_physicalDevice, &deviceProperties);
 
-    std::cout << "Valittu laite: " << deviceProperties.properties.deviceName << "\n";
-    std::cout << "Sopiva laite valittu onnistuneesti!" << std::endl;
+    m_logger->logMessage("Vulkan", "Valittu laite: " + std::string(deviceProperties.properties.deviceName));
+    m_logger->logMessage("Vulkan", "Sopiva laite valittu onnistuneesti!");
 }
 
 bool VulkanRenderer::isDeviceSuitable(VkPhysicalDevice device) {
-    std::printf("Tarkistetaan laitteen sopivuus.\n");
+    m_logger->logMessage("Vulkan", "Tarkistetaan laitteen sopivuus.\n");
     if (device == VK_NULL_HANDLE) {
 		return false; // Ei laitetta, ei sopiva
 	}
 	QueueFamilyIndices indices = findQueueFamilies(device);
     if (indices.isComplete()) {
-        std::printf("Laite sopiva.\n");
+        m_logger->logMessage("Vulkan", "Laite sopiva.");
 
 		return true; // Laite sopii, kaikki tarvittavat perheindeksit löytyivät
     }
-    std::printf("Laite ei sopiva, vajaat perheindeksit.\n");
+    m_logger->logMessage("Vulkan", "Laite ei sopiva, vajaat perheindeksit.");
 	return false; // Tarvittavia perheindeksejä ei löytynyt, laite ei sopiva
 }
 
 QueueFamilyIndices VulkanRenderer::findQueueFamilies(VkPhysicalDevice device) {
-	std::printf("Etsitään laitteen perheindeksit...");
+    m_logger->logMessage("Vulkan", "Etsitään laitteen perheindeksit...");
     QueueFamilyIndices indices;
 
     // 1. Kysytään, kuinka monta jonoperhettä laitteella on
@@ -428,12 +437,12 @@ QueueFamilyIndices VulkanRenderer::findQueueFamilies(VkPhysicalDevice device) {
 
         i++;
     }
-    std::printf("...Perhe indeksit löytyivät\n");
+    m_logger->logMessage("Vulkan", "...Perhe indeksit löytyivät");
     return indices;
 }
 
 void VulkanRenderer::createLogicalDevice() {
-	std::printf("Luodaan loogista laitetta... \n");
+    m_logger->logMessage("Vulkan", "Luodaan loogista laitetta...");
     // 1. Haetaan taas ne jonojen indeksit siltä laitteelta, jonka juuri valitsimme
     QueueFamilyIndices indices = findQueueFamilies(m_physicalDevice);
 
@@ -478,11 +487,11 @@ void VulkanRenderer::createLogicalDevice() {
     vkGetDeviceQueue(m_device, indices.graphicsFamily.value(), 0, &m_graphicsQueue);
     vkGetDeviceQueue(m_device, indices.presentFamily.value(), 0, &m_presentQueue);
 
-    std::cout << "...Looginen laite ja jonot luotu onnistuneesti!\n";
+    m_logger->logMessage("Vulkan", "...Looginen laite ja jonot luotu onnistuneesti!\n");
 }
 
 void VulkanRenderer::createRenderpass() {
-    std::printf("Luodaan Render Pass...\n");
+    m_logger->logMessage("Vulkan", "Luodaan Render Pass...");
 	// Render Pass määrittelee, miten renderöinti tapahtuu. Tässä vaiheessa määritellään vain yksinkertainen väribufferi ilman syvyysbufferia tai monimoninäytön tukea. Tämä on hyvä lähtökohta, ja myöhemmin tutoriaalissa voidaan laajentaa tätä monimutkaisempaan renderpassiin.
 	VkAttachmentDescription colorAttachment{};
 	colorAttachment.format = m_swapChainImageFormat; // Käytetään samaa formaattia kuin swapchainin kuvat
@@ -523,7 +532,7 @@ void VulkanRenderer::createRenderpass() {
 	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, &m_renderPass) != VK_SUCCESS) {
 		throw std::runtime_error("Virhe: Render Passin luonti epäonnistui!");
 	}
-	std::printf("...Render Pass luotu onnistuneesti!\n");
+    m_logger->logMessage("Vulkan", "...Render Pass luotu onnistuneesti!");
 
 }
 VkShaderModule VulkanRenderer::createShaderModule(const std::vector<char>& code) {
@@ -541,7 +550,7 @@ VkShaderModule VulkanRenderer::createShaderModule(const std::vector<char>& code)
 
     return shaderModule;
 }
-#include <fstream>
+
 
 static std::vector<char> readFile(const std::string& filename) {
     std::ifstream file(filename, std::ios::ate | std::ios::binary);
@@ -561,7 +570,7 @@ static std::vector<char> readFile(const std::string& filename) {
 }
 void VulkanRenderer::createGraphicsPipeline() {
     
-        std::printf("Aloitetaan grafiikkaputken (Graphics Pipeline) alustus...\n");
+    m_logger->logMessage("Vulkan", "Aloitetaan grafiikkaputken (Graphics Pipeline) alustus...");
 
         // === 1. LADATAAN SHADER-BINÄÄRIT SISÄÄN ===
         auto vertShaderCode = readFile("vert.spv");
@@ -688,7 +697,7 @@ void VulkanRenderer::createGraphicsPipeline() {
         throw std::runtime_error("Virhe: Grafiikkaputken (Graphics Pipeline) luonti epäonnistui!");
     }
 
-    std::printf("...Grafiikkaputki luotu onnistuneesti!\n");
+    m_logger->logMessage("Vulkan", "...Grafiikkaputki luotu onnistuneesti!\n");
 
     // === 3. TUHOTAAN SHADER MODUULIT ===
     // Kun putki on luotu, näytönohjain on kääntänyt koodin omalle konekielelleen. 
@@ -781,7 +790,7 @@ void VulkanRenderer::createFramebuffers() {
             throw std::runtime_error("Virhe: Framebufferin luonti epäonnistui!");
         }
     }
-    std::printf("...Framebufferit luotu onnistuneesti (%zu kpl)!\n", m_swapChainFramebuffers.size());
+   m_logger->logMessage("Vulkan","...Framebufferit luotu onnistuneesti (" , m_swapChainFramebuffers.size(), "kpl)!");
 }
 
 void VulkanRenderer::createDescriptorSetLayout() {
@@ -1055,7 +1064,6 @@ void VulkanRenderer::cleanup() {
     if (m_instance != VK_NULL_HANDLE) {
         vkDestroyInstance(m_instance, nullptr);
     }
-    
-	std::cout << "Vulkan-resurssit tuhottu onnistuneesti!" << std::endl;
+	m_logger->logMessage("Vulkan" ,"Vulkan-resurssit tuhottu onnistuneesti!");
 
 } 
