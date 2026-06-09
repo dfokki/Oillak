@@ -7,6 +7,11 @@
 #include <cassert>
 #include <algorithm>
 #include <limits>
+#include <fstream>
+#include <vector>
+#include <string>
+#include <filesystem>
+#include <system_error>
 
 VulkanRenderer::VulkanRenderer(window& appWindow, uint32_t deviceIndex) : m_window(appWindow), m_preferredDeviceIndex(deviceIndex) {
     initVulkan();
@@ -17,31 +22,30 @@ VulkanRenderer::~VulkanRenderer() {
 }
 
 void VulkanRenderer::initVulkan() {
+
     createInstance();
     createSurface();
-  
-	pickPhysicalDevice(); //etsitään fyysinen laite, joka tukee Vulkania
-	createLogicalDevice(); 
+
+    pickPhysicalDevice(); //etsitään fyysinen laite, joka tukee Vulkania
+    createLogicalDevice();
     createSwapChain();
     createImageViews();
-	createRenderpass();
+    createRenderpass();
     createFramebuffers();
 
-	createDescriptorSetLayout();
+    createDescriptorSetLayout();
 
     createGraphicsPipeline();
-    
-	createVertexBuffer();
-    createIndexBuffer();
-	createUniformBuffer();
-	createDescriptorPool();
-	createDescriptorSets();
-	createCommandPool();
-	createCommandBuffer();
-	createSyncObjects();
-    
+    createUniformBuffer();
+    createDescriptorPool();
+    createDescriptorSets();
+    createCommandPool();
+    createCommandBuffer();
+    createSyncObjects();
+
+   
 }
-void VulkanRenderer::drawFrame() {
+void VulkanRenderer::drawFrame(const Scene &scene) {
     // 1. Odotetaan, että GPU on valmis tämän framen (m_currentFrame) työlle
     vkWaitForFences(m_device, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX);
 
@@ -76,8 +80,13 @@ void VulkanRenderer::drawFrame() {
 
     // Nollataan aita vasta nyt
     vkResetFences(m_device, 1, &m_inFlightFences[m_currentFrame]);
-
+    recordCommandBuffer(m_commandBuffers[m_currentFrame], imageIndex, scene);
     // 4. Päivitetään UBO:t
+
+    // 5. Resetoidaan ja nauhoitetaan komentopuskuri
+    vkResetCommandBuffer(m_commandBuffers[m_currentFrame], 0);
+    recordCommandBuffer(m_commandBuffers[m_currentFrame], imageIndex, scene);
+
     updateUniformBuffer(m_currentFrame);
 
     // Defensive synchronization checks to avoid out-of-range semaphore access.
@@ -88,9 +97,6 @@ void VulkanRenderer::drawFrame() {
         return;
     }
 
-    // 5. Resetoidaan ja nauhoitetaan komentopuskuri
-    vkResetCommandBuffer(m_commandBuffers[m_currentFrame], 0);
-    recordCommandBuffer(m_commandBuffers[m_currentFrame], imageIndex);
 
     // 6. Submit-tietojen määrittely
     VkSubmitInfo submitInfo{};
@@ -168,13 +174,13 @@ void VulkanRenderer::createInstance() {
     std::vector<const char*> extensions = {
         VK_KHR_SURFACE_EXTENSION_NAME,
         VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-		VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME //Tämä lisätty tukemaan uudempaa swapchain-kyselyä, joka on hyödyllinen tulevissa vaiheissa
+        VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME //Tämä lisätty tukemaan uudempaa swapchain-kyselyä, joka on hyödyllinen tulevissa vaiheissa
     };
 
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.ppEnabledExtensionNames = extensions.data();
 
-	// 4. Valinnaiset validointikerrokset (debuggausta varten)
+    // 4. Valinnaiset validointikerrokset (debuggausta varten)
     createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
     createInfo.ppEnabledLayerNames = validationLayers.data();
 
@@ -347,13 +353,13 @@ SwapChainSupportDetails VulkanRenderer::querySwapChainSupport(VkPhysicalDevice d
 
 VkSurfaceFormatKHR VulkanRenderer::chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats)
 {
-	for (const auto& format : availableFormats) {
-		if (format.format == VK_FORMAT_B8G8R8A8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)// Tämä on yleisesti suositeltu formaatti, joka tukee 8-bittisiä värejä ja sRGB-väriavaruutta
+    for (const auto& format : availableFormats) {
+        if (format.format == VK_FORMAT_B8G8R8A8_SRGB && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)// Tämä on yleisesti suositeltu formaatti, joka tukee 8-bittisiä värejä ja sRGB-väriavaruutta
         {
-			return format; // Löydettiin haluttu formaatti, palautetaan se
-		}
-	}
-	return availableFormats[0]; // Jos haluttu formaatti ei löytynyt, palautetaan ensimmäinen saatavilla oleva formaatti (varmistetaan, että lista ei ole tyhjä ennen tätä!)
+            return format; // Löydettiin haluttu formaatti, palautetaan se
+        }
+    }
+    return availableFormats[0]; // Jos haluttu formaatti ei löytynyt, palautetaan ensimmäinen saatavilla oleva formaatti (varmistetaan, että lista ei ole tyhjä ennen tätä!)
 }
 
 VkPresentModeKHR VulkanRenderer::chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes)
@@ -421,20 +427,20 @@ void VulkanRenderer::pickPhysicalDevice() {
 bool VulkanRenderer::isDeviceSuitable(VkPhysicalDevice device) {
     std::printf("Tarkistetaan laitteen sopivuus.\n");
     if (device == VK_NULL_HANDLE) {
-		return false; // Ei laitetta, ei sopiva
-	}
-	QueueFamilyIndices indices = findQueueFamilies(device);
+        return false; // Ei laitetta, ei sopiva
+    }
+    QueueFamilyIndices indices = findQueueFamilies(device);
     if (indices.isComplete()) {
         std::printf("Laite sopiva.\n");
 
-		return true; // Laite sopii, kaikki tarvittavat perheindeksit löytyivät
+        return true; // Laite sopii, kaikki tarvittavat perheindeksit löytyivät
     }
     std::printf("Laite ei sopiva, vajaat perheindeksit.\n");
-	return false; // Tarvittavia perheindeksejä ei löytynyt, laite ei sopiva
+    return false; // Tarvittavia perheindeksejä ei löytynyt, laite ei sopiva
 }
 
 QueueFamilyIndices VulkanRenderer::findQueueFamilies(VkPhysicalDevice device) {
-	std::printf("Etsitään laitteen perheindeksit...");
+    std::printf("Etsitään laitteen perheindeksit...");
     QueueFamilyIndices indices;
 
     // 1. Kysytään, kuinka monta jonoperhettä laitteella on
@@ -473,7 +479,7 @@ QueueFamilyIndices VulkanRenderer::findQueueFamilies(VkPhysicalDevice device) {
 }
 
 void VulkanRenderer::createLogicalDevice() {
-	std::printf("Luodaan loogista laitetta... \n");
+    std::printf("Luodaan loogista laitetta... \n");
     // 1. Haetaan taas ne jonojen indeksit siltä laitteelta, jonka juuri valitsimme
     QueueFamilyIndices indices = findQueueFamilies(m_physicalDevice);
 
@@ -503,11 +509,11 @@ void VulkanRenderer::createLogicalDevice() {
     createInfo.pQueueCreateInfos = queueCreateInfos.data();
     createInfo.pEnabledFeatures = &deviceFeatures;
     // Laajennukset (Extensions).
-	std::vector<const char*> deviceExtensions = {
-		VK_KHR_SWAPCHAIN_EXTENSION_NAME // Swapchain-laajennus on ehdoton, jos haluamme piirtää ikkunaan!
-	};
-	createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size()); // Laajennukset on pakko määritellä, muuten laite ei tue niitä, vaikka fyysinen laite tukisi!
-	createInfo.ppEnabledExtensionNames = deviceExtensions.data(); // Validation layerit (Debug) lisätään myöhemmin tutoriaalin edetessä
+    std::vector<const char*> deviceExtensions = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME // Swapchain-laajennus on ehdoton, jos haluamme piirtää ikkunaan!
+    };
+    createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size()); // Laajennukset on pakko määritellä, muuten laite ei tue niitä, vaikka fyysinen laite tukisi!
+    createInfo.ppEnabledExtensionNames = deviceExtensions.data(); // Validation layerit (Debug) lisätään myöhemmin tutoriaalin edetessä
 
     // 5. Luodaan Looginen Laite!
     if (vkCreateDevice(m_physicalDevice, &createInfo, nullptr, &m_device) != VK_SUCCESS) {
@@ -523,47 +529,47 @@ void VulkanRenderer::createLogicalDevice() {
 
 void VulkanRenderer::createRenderpass() {
     std::printf("Luodaan Render Pass...\n");
-	// Render Pass määrittelee, miten renderöinti tapahtuu. Tässä vaiheessa määritellään vain yksinkertainen väribufferi ilman syvyysbufferia tai monimoninäytön tukea. Tämä on hyvä lähtökohta, ja myöhemmin tutoriaalissa voidaan laajentaa tätä monimutkaisempaan renderpassiin.
-	VkAttachmentDescription colorAttachment{};
-	colorAttachment.format = m_swapChainImageFormat; // Käytetään samaa formaattia kuin swapchainin kuvat
-	colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT; // Ei multisamplingia (antialiasing)
-	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // Tyhjennetään kuva joka kerta ennen piirtämistä
-	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; // Tallennetaan piirrettävä kuva muistiin esitystä varten
-	colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // Emme käytä stenceliä, joten ei väliä
-	colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; // Emme käytä stenceliä, joten ei väliä
-	colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // Alkuperäinen layout ei merkitse mitään, koska tyhjennämme sen joka kerta
-	colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; // Lopullinen layout on esityskelpoinen, jotta voimme näyttää sen ikkunassa
-	VkAttachmentReference colorAttachmentRef{};
-	colorAttachmentRef.attachment = 0; // Viittaa ensimmäiseen (ja ainoaan) liitteeseen renderpassissa
-	colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; // Layout, jossa renderöinti tapahtuu
-	VkSubpassDescription subpass{};
-	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS; // Tämä on grafiikkasubpassi
-	subpass.colorAttachmentCount = 1;
-	subpass.pColorAttachments = &colorAttachmentRef; // Käytetään määritettyä väriliitettä
-	//jotta vulkan tietää, että meidän renderöinti riippuu edellisestä renderöinnistä (esim. swapchainin kuva on valmis esitettäväksi), määritellään subpass-dependenssi
-	// Tämä varmistaa, että renderöinti odottaa swapchainin kuvan olevan valmis ennen kuin yrittää piirtää siihen, ja että kuva on esityskelpoinen ennen kuin se näytetään ikkunassa
-	//ilman tätä dependenssiä saatat kohdata ongelmia, kuten mustia ruutuja tai virheitä renderöinnissä, koska Vulkan ei tiedä, milloin swapchainin kuva on valmis käytettäväksi
+    // Render Pass määrittelee, miten renderöinti tapahtuu. Tässä vaiheessa määritellään vain yksinkertainen väribufferi ilman syvyysbufferia tai monimoninäytön tukea. Tämä on hyvä lähtökohta, ja myöhemmin tutoriaalissa voidaan laajentaa tätä monimutkaisempaan renderpassiin.
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = m_swapChainImageFormat; // Käytetään samaa formaattia kuin swapchainin kuvat
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT; // Ei multisamplingia (antialiasing)
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // Tyhjennetään kuva joka kerta ennen piirtämistä
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; // Tallennetaan piirrettävä kuva muistiin esitystä varten
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // Emme käytä stenceliä, joten ei väliä
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE; // Emme käytä stenceliä, joten ei väliä
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // Alkuperäinen layout ei merkitse mitään, koska tyhjennämme sen joka kerta
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; // Lopullinen layout on esityskelpoinen, jotta voimme näyttää sen ikkunassa
+    VkAttachmentReference colorAttachmentRef{};
+    colorAttachmentRef.attachment = 0; // Viittaa ensimmäiseen (ja ainoaan) liitteeseen renderpassissa
+    colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; // Layout, jossa renderöinti tapahtuu
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS; // Tämä on grafiikkasubpassi
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorAttachmentRef; // Käytetään määritettyä väriliitettä
+    //jotta vulkan tietää, että meidän renderöinti riippuu edellisestä renderöinnistä (esim. swapchainin kuva on valmis esitettäväksi), määritellään subpass-dependenssi
+    // Tämä varmistaa, että renderöinti odottaa swapchainin kuvan olevan valmis ennen kuin yrittää piirtää siihen, ja että kuva on esityskelpoinen ennen kuin se näytetään ikkunassa
+    //ilman tätä dependenssiä saatat kohdata ongelmia, kuten mustia ruutuja tai virheitä renderöinnissä, koska Vulkan ei tiedä, milloin swapchainin kuva on valmis käytettäväksi
     VkSubpassDependency dependency{};
-	dependency.srcSubpass = VK_SUBPASS_EXTERNAL; // Riippuvuus ulkoisesta subpassista (esim. edellisestä renderöinnistä)
-	dependency.dstSubpass = 0; // Riippuvuus ensimmäisestä subpassista (meidän ainoa subpassi)
-	dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; // Odotetaan, että edellinen renderöinti on valmis ennen kuin aloitamme tämän 
-	dependency.srcAccessMask = 0; // Ei tarvitse odottaa mitään erityistä pääsyä, koska edellinen renderöinti on valmis 
-	dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; // Tämä subpassi käyttää väriliitettä, joten odotetaan, että se on valmis ennen kuin aloitamme tämän
-	dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; // Tarvitsemme kirjoitusoikeuden väriliitteeseen, jotta voimme renderöidä siihen
-	// Render Passin luontitiedot
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL; // Riippuvuus ulkoisesta subpassista (esim. edellisestä renderöinnistä)
+    dependency.dstSubpass = 0; // Riippuvuus ensimmäisestä subpassista (meidän ainoa subpassi)
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; // Odotetaan, että edellinen renderöinti on valmis ennen kuin aloitamme tämän 
+    dependency.srcAccessMask = 0; // Ei tarvitse odottaa mitään erityistä pääsyä, koska edellinen renderöinti on valmis 
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT; // Tämä subpassi käyttää väriliitettä, joten odotetaan, että se on valmis ennen kuin aloitamme tämän
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; // Tarvitsemme kirjoitusoikeuden väriliitteeseen, jotta voimme renderöidä siihen
+    // Render Passin luontitiedot
     VkRenderPassCreateInfo renderPassInfo{};
-	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-	renderPassInfo.attachmentCount = 1;
-	renderPassInfo.pAttachments = &colorAttachment;
-	renderPassInfo.subpassCount = 1;
-	renderPassInfo.pSubpasses = &subpass;
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = 1;
+    renderPassInfo.pAttachments = &colorAttachment;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
     renderPassInfo.dependencyCount = 1;
-	renderPassInfo.pDependencies = &dependency;
+    renderPassInfo.pDependencies = &dependency;
 
-	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, &m_renderPass) != VK_SUCCESS) {
-		throw std::runtime_error("Virhe: Render Passin luonti epäonnistui!");
-	}
-	std::printf("...Render Pass luotu onnistuneesti!\n");
+    if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, &m_renderPass) != VK_SUCCESS) {
+        throw std::runtime_error("Virhe: Render Passin luonti epäonnistui!");
+    }
+    std::printf("...Render Pass luotu onnistuneesti!\n");
 
 }
 VkShaderModule VulkanRenderer::createShaderModule(const std::vector<char>& code) {
@@ -581,30 +587,44 @@ VkShaderModule VulkanRenderer::createShaderModule(const std::vector<char>& code)
 
     return shaderModule;
 }
-#include <fstream>
 
 static std::vector<char> readFile(const std::string& filename) {
-    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+    namespace fs = std::filesystem;
 
-    if (!file.is_open()) {
-        throw std::runtime_error("Virhe: Tiedoston avaaminen epäonnistui: " + filename);
+    // If file doesn't exist, throw with current working directory for easier debugging
+    if (!fs::exists(filename)) {
+        throw std::runtime_error(
+            std::string("Failed to open file: '") + filename +
+            "'. Current working directory: " + fs::current_path().string()
+        );
     }
 
-    size_t fileSize = (size_t)file.tellg();
+    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open file (ifstream): " + filename);
+    }
+
+    auto fileSize = static_cast<size_t>(file.tellg());
+    if (fileSize == 0) {
+        // handle empty file as an error or return empty buffer depending on needs
+        throw std::runtime_error("Shader file is empty: " + filename);
+    }
+
     std::vector<char> buffer(fileSize);
-
     file.seekg(0);
-    file.read(buffer.data(), fileSize);
+    file.read(buffer.data(), static_cast<std::streamsize>(fileSize));
+    if (!file) {
+        throw std::runtime_error("Failed reading file contents: " + filename);
+    }
     file.close();
-
     return buffer;
 }
 void VulkanRenderer::createGraphicsPipeline() {
     std::printf("Luodaan grafiikkaputkea...\n");
 
     // 1. Shaderien lataus
-    auto vertShaderCode = readFile("vert.spv");
-    auto fragShaderCode = readFile("frag.spv");
+    auto vertShaderCode = readFile("shaders/shader.vert.spv");
+    auto fragShaderCode = readFile("shaders/shader.frag.spv");
 
     VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
     VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -684,24 +704,31 @@ void VulkanRenderer::createGraphicsPipeline() {
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &colorBlendAttachment;
 
+	//jotta voidaan piirtää useampia esineitä eri transformaatioilla, tarvitsemme push constantin, joka on nopea tapa lähettää pieniä määriä dataa shaderille ilman erillistä uniform bufferia. Tässä tapauksessa lähetämme yhden 4x4 matriisin (esim. mallimatriisi) vertex shaderille jokaista esinettä varten.
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(glm::mat4); // Lähetämme yhden 4x4 matriisin
     // 8. Pipeline Layout
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &m_descriptorSetLayout;
+	pipelineLayoutInfo.pushConstantRangeCount = 1;
+	pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange; // Lisätään push constant range pipeline layouttiin
 
     if (vkCreatePipelineLayout(m_device, &pipelineLayoutInfo, nullptr, &m_pipelineLayout) != VK_SUCCESS) {
         throw std::runtime_error("Virhe: Pipeline Layoutin luonti epäonnistui!");
     }
-	//dynaaminen pipeline (esim. dynaamiset viewportit) vaatisi lisää tietoa pipelineInfo-rakenteeseen, mutta tässä vaiheessa pidetään se yksinkertaisena ja kiinteänä, jotta päästään nopeammin alkuun renderöinnissä.
-	std::vector<VkDynamicState> dynamicStates = {
-		VK_DYNAMIC_STATE_VIEWPORT,
-		VK_DYNAMIC_STATE_SCISSOR
-	};
-	VkPipelineDynamicStateCreateInfo dynamicStateInfo{};
-	dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
-	dynamicStateInfo.pDynamicStates = dynamicStates.data();
+    //dynaaminen pipeline (esim. dynaamiset viewportit) vaatisi lisää tietoa pipelineInfo-rakenteeseen, mutta tässä vaiheessa pidetään se yksinkertaisena ja kiinteänä, jotta päästään nopeammin alkuun renderöinnissä.
+    std::vector<VkDynamicState> dynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+    VkPipelineDynamicStateCreateInfo dynamicStateInfo{};
+    dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+    dynamicStateInfo.pDynamicStates = dynamicStates.data();
     // 9. Graphics Pipeline luonti
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -712,7 +739,7 @@ void VulkanRenderer::createGraphicsPipeline() {
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;
-	pipelineInfo.pDynamicState = dynamicStates.data() ? &dynamicStateInfo : nullptr; // Käytä dynaamista tilaa, jos määritetty
+    pipelineInfo.pDynamicState = dynamicStates.data() ? &dynamicStateInfo : nullptr; // Käytä dynaamista tilaa, jos määritetty
     pipelineInfo.pDepthStencilState = nullptr; // Jos lisäät syvyyspuskurin myöhemmin, tämä muuttuu
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.layout = m_pipelineLayout;
@@ -754,8 +781,8 @@ void VulkanRenderer::createCommandBuffer() {
 
     chk(vkAllocateCommandBuffers(m_device, &allocInfo, m_commandBuffers.data()));
 }
-
-void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, const Scene& scene) {
+    
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
@@ -767,11 +794,11 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = m_renderPass;
-    renderPassInfo.framebuffer = m_swapChainFramebuffers[imageIndex]; // Tarvitset tämän listan!
+    renderPassInfo.framebuffer = m_swapChainFramebuffers[imageIndex];
     renderPassInfo.renderArea.offset = { 0, 0 };
     renderPassInfo.renderArea.extent = m_swapChainExtent;
 
-    VkClearValue clearColor = { {{0.0f, 0.0f, 0.0f, 1.0f}} }; // Musta taustaväri
+    VkClearValue clearColor = { {{0.0f, 0.0f, 0.0f, 1.0f}} };
     renderPassInfo.clearValueCount = 1;
     renderPassInfo.pClearValues = &clearColor;
 
@@ -779,32 +806,43 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
 
     // 2. Kytketään Graphics Pipeline
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphicsPipeline);
+    
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    // Oletan, että swapchainin koko on tallennettu m_swapChainExtent -muuttujaan.
+    viewport.width = static_cast<float>(m_swapChainExtent.width);
+    viewport.height = static_cast<float>(m_swapChainExtent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
 
-    //F1-resizing
-	VkViewport viewport{};
-	viewport.x = 0.0f; viewport.y = 0.0f;
-	viewport.width = (float)m_swapChainExtent.width;
-	viewport.height = (float)m_swapChainExtent.height;
-	viewport.minDepth = 0.0f; viewport.maxDepth = 1.0f;
-	viewport.maxDepth = 1.0f;
-	vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.offset = { 0, 0 };
+    scissor.extent = m_swapChainExtent;
+    vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+    // ==========================================
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        m_pipelineLayout, 0, 1, &m_descriptorSets[m_currentFrame], 0, nullptr);
+   
+    // PIIRTOLOOPPI
+    for (const auto& model : scene.getModels()) {
 
-	VkRect2D scissor{};
-	scissor.offset = { 0, 0 };// Scissor-alue on sama kuin viewport, mutta se voidaan määritellä erikseen, jos halutaan rajata renderöinti tiettyyn osaan ikkunaa
-	scissor.extent = m_swapChainExtent;
-	vkCmdSetScissor(commandBuffer, 0, 1, &scissor);//
+        // PUSH CONSTANT: Lähetetään mallikohtainen matriisi suoraan GPU:lle
+        vkCmdPushConstants(
+            commandBuffer,
+            m_pipelineLayout,             // Rendererin jäsenmuuttuja
+            VK_SHADER_STAGE_VERTEX_BIT,   // Sama stage kuin pipeline layoutissa
+            0,                            // Offset
+            sizeof(glm::mat4),            // Koko
+            &model->getModelMatrix()      // Data
+        );
 
-    //Sidotaan Vertex Buffer binding-paikkaan 0
-    VkBuffer vertexBuffers[] = { m_vertexBuffer };
-    VkDeviceSize offsets[] = { 0 };
+        model->bind(commandBuffer);
+        model->draw(commandBuffer);
+    }
 
-    vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-    vkCmdBindIndexBuffer(commandBuffer, m_indexBuffer, 0, VK_INDEX_TYPE_UINT16);
-
-    // Muuta tämä yksi rivi recordCommandBuffer-funktiossa:
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 1, &m_descriptorSets[m_currentFrame], 0, nullptr);
-    // Piirretään 6 indeksiä (eli 2 kolmiota), 1 instanssi, alkaen indeksistä 0 jne.
-    vkCmdDrawIndexed(commandBuffer, 6, 1, 0, 0, 0);
+ 
     // 4. Lopetetaan Render Pass
     vkCmdEndRenderPass(commandBuffer);
 
@@ -812,30 +850,16 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t
         throw std::runtime_error("Virhe: Komentopuskurin tallennus epäonnistui!");
     }
 }
-void VulkanRenderer::createFramebuffers() {
-    m_swapChainFramebuffers.resize(m_swapChainImageViews.size());
+void VulkanRenderer::updateUniformBufferForModel(uint32_t currentFrame, const glm::mat4& matrix) {
+    UniformBufferObject ubo{};
+    ubo.transform = matrix;
 
-    for (size_t i = 0; i < m_swapChainImageViews.size(); i++) {
-        VkImageView attachments[] = {
-            m_swapChainImageViews[i]
-        };
-
-        VkFramebufferCreateInfo framebufferInfo{};
-        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebufferInfo.renderPass = m_renderPass;
-        framebufferInfo.attachmentCount = 1;
-        framebufferInfo.pAttachments = attachments;
-        framebufferInfo.width = m_swapChainExtent.width;
-        framebufferInfo.height = m_swapChainExtent.height;
-        framebufferInfo.layers = 1;
-
-        if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, &m_swapChainFramebuffers[i]) != VK_SUCCESS) {
-            throw std::runtime_error("Virhe: Framebufferin luonti epäonnistui!");
-        }
-    }
-    std::printf("...Framebufferit luotu onnistuneesti (%zu kpl)!\n", m_swapChainFramebuffers.size());
+    // Kopioi matriisi bufferiin, johon shader viittaa
+    void* data;
+    vkMapMemory(m_device, m_uniformBuffersMemory[currentFrame], 0, sizeof(ubo), 0, &data);
+    memcpy(data, &ubo, sizeof(ubo));
+    vkUnmapMemory(m_device, m_uniformBuffersMemory[currentFrame]);
 }
-
 void VulkanRenderer::createDescriptorSetLayout() {
     VkDescriptorSetLayoutBinding uboLayoutBinding{};
     uboLayoutBinding.binding = 0;
@@ -864,120 +888,7 @@ uint32_t VulkanRenderer::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFla
     }
     throw std::runtime_error("Sopivaa muistityyppia ei loytynyt naitonohjaimelta!");
 }
-// Tässä funktiossa luodaan vertex-puskuri, joka sisältää kolmion vertex-tiedot (pisteet ja värit). Tämä puskuri varataan GPU:n muistista, ja siihen kopioidaan dataa CPU:sta. 
-// Vulkan vaatii useita vaiheita tämän tekemiseen, kuten puskurin luomisen, muistivaatimusten hakemisen, muistin varaamisen ja sitomisen, sekä lopulta datan kopioimisen.
-void VulkanRenderer::createVertexBuffer() {
 
-    std::vector<Vertex> vertices = {
-         {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}}, // 0: Vasen yläkulma (Punainen)
-         {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}}, // 1: Oikea yläkulma (Vihreä)
-         {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}}, // 2: Oikea alakulma (Sininen)
-         {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}  // 3: Vasen alakulma (Valkoinen)
-    };
-
-    VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
-
-    // 2. Luodaan itse puskuri-objekti (Buffer)
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = bufferSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT; // Kerrotaan, että tämä on Vertex puskuri
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    // chk on aiemmin luomasi VulkanUtils-makro/funktio virheentarkistukseen
-    chk(vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_vertexBuffer));
-
-    // 3. Kysytään puskurin vaatimat muistivaatimukset GPU:lta
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(m_device, m_vertexBuffer, &memRequirements);
-
-    // 4. Varataan varsinainen fyysinen muisti GPU:lta (Allocate)
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    chk(vkAllocateMemory(m_device, &allocInfo, nullptr, &m_vertexBufferMemory));
-
-    // 5. Sidotaan varattu muisti ja puskuri-objekti toisiinsa
-    vkBindBufferMemory(m_device, m_vertexBuffer, m_vertexBufferMemory, 0);
-
-    // 6. KARTTAmuisti (Map Memory): Avataan "putki" RAM-muistista VRAM-muistiin ja kopioidaan data
-    void* data;
-    vkMapMemory(m_device, m_vertexBufferMemory, 0, bufferSize, 0, &data);
-    memcpy(data, vertices.data(), (size_t)bufferSize);
-    vkUnmapMemory(m_device, m_vertexBufferMemory);
-}
-void VulkanRenderer::createIndexBuffer() {
-    // Määritellään, miten pisteet yhdistetään kahdeksi myötäpäivään kulkevaksi kolmioksi
-    std::vector<uint16_t> indices = {
-        0, 1, 2,  // Ensimmäinen kolmio (Vasen ylä -> Oikea ylä -> Oikea ala)
-        2, 3, 0   // Toinen kolmio (Oikea ala -> Vasen ala -> Vasen ylä)
-    };
-
-    VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
-
-    // 1. Luodaan puskuri-objekti indekseille
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = bufferSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT; // <-- Tärkeä: Indeksipuskuri
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    chk(vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_indexBuffer));
-
-    // 2. Pyydetään muistivaatimukset ja varataan muisti GPU:lta
-    VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(m_device, m_indexBuffer, &memRequirements);
-
-    VkMemoryAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = memRequirements.size;
-    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-
-    chk(vkAllocateMemory(m_device, &allocInfo, nullptr, &m_indexBufferMemory));
-    vkBindBufferMemory(m_device, m_indexBuffer, m_indexBufferMemory, 0);
-
-    // 3. Kopioidaan indeksidata muistiin
-    void* data;
-    vkMapMemory(m_device, m_indexBufferMemory, 0, bufferSize, 0, &data);
-    memcpy(data, indices.data(), (size_t)bufferSize);
-    vkUnmapMemory(m_device, m_indexBufferMemory);
-}
-void VulkanRenderer::createSyncObjects() {
-    // Aidat pysyvät entisellään (Frames in Flight)
-    m_inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
-
-    // Semaforit: luodaan swapchain-kuvien määrän mukaan
-    size_t imageCount = m_swapChainImages.size();
-    m_imageAvailableSemaphores.resize(imageCount);
-    m_renderFinishedSemaphores.resize(imageCount);
-    m_inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
-
-    VkSemaphoreCreateInfo semaphoreInfo{};
-    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-    VkFenceCreateInfo fenceInfo{};
-    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
-    // Luodaan semaforit jokaiselle kuvalle
-    for (size_t i = 0; i < imageCount; i++) {
-        if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_imageAvailableSemaphores[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_renderFinishedSemaphores[i]) != VK_SUCCESS) {
-            throw std::runtime_error("Virhe: Semaforien luonti epäonnistui!");
-        }
-    }
-
-    // Luodaan aidat (Frames in Flight)
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        if (vkCreateFence(m_device, &fenceInfo, nullptr, &m_inFlightFences[i]) != VK_SUCCESS) {
-            throw std::runtime_error("Virhe: Aitapuskurien luonti epäonnistui!");
-        }
-    }
-}
 void VulkanRenderer::createUniformBuffer() {
     VkDeviceSize bufferSize = sizeof(UniformBufferObject);
 
@@ -1055,34 +966,30 @@ void VulkanRenderer::createDescriptorSets() {
     }
 }
 
-void VulkanRenderer::updateUniformBuffer(uint32_t currentFrame){
-    static auto startTime = std::chrono::high_resolution_clock::now();
-    auto currentTime = std::chrono::high_resolution_clock::now();
-    float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
-
-	//otetaan huomioo aspect ratio , jotta kolmio ei veny väärän kokoiseksi ikkunan muuttuessa
-	float aspectRatio = static_cast<float>(m_swapChainExtent.width) / static_cast<float>(m_swapChainExtent.height);
+void VulkanRenderer::updateUniformBuffer(uint32_t currentFrame) {
+    // Otetaan huomioon aspect ratio, jotta neliö ei veny väärän kokoiseksi
+    float aspectRatio = static_cast<float>(m_swapChainExtent.width) / static_cast<float>(m_swapChainExtent.height);
 
     UniformBufferObject ubo{};
 
-    ubo.transform = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    // POISTETTU GLOBAALI ROTAATIO TÄÄLTÄ!
+    // Luodaan vain 2D orthographic -projektio (tämä on nyt kameramme/linssimme)
+    glm::mat4 ortho = glm::ortho(-aspectRatio, aspectRatio, -1.0f, 1.0f);
 
-	//luodaan 2d orthographic-projektio, joka ottaa huomioon ikkunan aspect ration, jotta kolmio ei veny väärän kokoiseksi ikkunan muuttuessa
-	//taämä skaalaa X-akselia siten että näyttää oikean kokoiselta riippumatta ikkunan koosta
-	glm::mat4 ortho = glm::ortho(-aspectRatio, aspectRatio, -1.0f, 1.0f);
-	// yhdistetään matriisit (GLM/Vulkan laskee oikealta vasemmalle, joten ortho on ensin)
-	 ubo.transform = ortho * ubo.transform; // Projektio * Malli (Model)
-    // Kopioidaan suoraan tämänhetkisen framen valmiiksi avattuun muistiputkeen!
+    // Asetetaan matriisi suoraan UBO:on
+    ubo.transform = ortho;
+
+    // Kopioidaan suoraan tämänhetkisen framen valmiiksi avattuun muistiputkeen
     memcpy(m_uniformBuffersMapped[m_currentFrame], &ubo, sizeof(ubo));
 }
 void VulkanRenderer::recreateSwapChain() {
     // 1. Käsittele minimointi: jos ikkunan koko on 0, odota
     int width = 0, height = 0;
-	m_window.getFramebufferSize(width, height); 
+    m_window.getFramebufferSize(width, height);
 
     while (width == 0 || height == 0) {
-		m_window.getFramebufferSize(width, height);
-		m_window.waitEvents();
+        m_window.getFramebufferSize(width, height);
+        m_window.waitEvents();
     }
 
     // 2. Varmista, että GPU on valmis ennen tuhoamista
@@ -1099,6 +1006,38 @@ void VulkanRenderer::recreateSwapChain() {
     // 5. Resetoi m_imagesInFlight, koska swapchainin kuvien määrä saattoi muuttua
     m_imagesInFlight.assign(m_swapChainImages.size(), VK_NULL_HANDLE);
 }
+void VulkanRenderer::createSyncObjects() {
+    // Aidat pysyvät entisellään (Frames in Flight)
+    m_inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+
+    // Semaforit: luodaan swapchain-kuvien määrän mukaan
+    size_t imageCount = m_swapChainImages.size();
+    m_imageAvailableSemaphores.resize(imageCount);
+    m_renderFinishedSemaphores.resize(imageCount);
+    m_inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+
+    VkSemaphoreCreateInfo semaphoreInfo{};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    // Luodaan semaforit jokaiselle kuvalle
+    for (size_t i = 0; i < imageCount; i++) {
+        if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_imageAvailableSemaphores[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &m_renderFinishedSemaphores[i]) != VK_SUCCESS) {
+            throw std::runtime_error("Virhe: Semaforien luonti epäonnistui!");
+        }
+    }
+
+    // Luodaan aidat (Frames in Flight)
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (vkCreateFence(m_device, &fenceInfo, nullptr, &m_inFlightFences[i]) != VK_SUCCESS) {
+            throw std::runtime_error("Virhe: Aitapuskurien luonti epäonnistui!");
+        }
+    }
+}
 void VulkanRenderer::cleanupSwapChain() {
     // Tuhoa framebufferit
     for (auto framebuffer : m_swapChainFramebuffers) {
@@ -1114,16 +1053,42 @@ void VulkanRenderer::cleanupSwapChain() {
     vkDestroySwapchainKHR(m_device, m_swapChain, nullptr);
 }
 
+void VulkanRenderer::createFramebuffers() {
+    m_swapChainFramebuffers.resize(m_swapChainImageViews.size());
+
+    for (size_t i = 0; i < m_swapChainImageViews.size(); i++) {
+        VkImageView attachments[] = {
+            m_swapChainImageViews[i]
+        };
+
+        VkFramebufferCreateInfo framebufferInfo{};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = m_renderPass;
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.width = m_swapChainExtent.width;
+        framebufferInfo.height = m_swapChainExtent.height;
+        framebufferInfo.layers = 1;
+
+        if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, &m_swapChainFramebuffers[i]) != VK_SUCCESS) {
+            throw std::runtime_error("Virhe: Framebufferin luonti epäonnistui!");
+        }
+    }
+    std::printf("...Framebufferit luotu onnistuneesti (%zu kpl)!\n", m_swapChainFramebuffers.size());
+}
+
 void VulkanRenderer::cleanup() {
+    vkDeviceWaitIdle(m_device);
+	m_squareModel.reset(); // Varmistetaan, että malli tuhoutuu ennen kuin tuhotaan grafiikkaputki, joka saattaa käyttää mallin vertex bufferia
     // Tuhoa grafiikkaputki ja sen layout
     if (m_graphicsPipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(m_device, m_graphicsPipeline, nullptr);
         m_graphicsPipeline = VK_NULL_HANDLE;
     }
-	if (m_pipelineLayout != VK_NULL_HANDLE) {
-		vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
-		m_pipelineLayout = VK_NULL_HANDLE;
-	}
+    if (m_pipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(m_device, m_pipelineLayout, nullptr);
+        m_pipelineLayout = VK_NULL_HANDLE;
+    }
     //tärkeää tuhoa kaikki Vulkan-resurssit päinvastaisessa järjestyksessä kuin ne luotiin, muuten voi tapahtua outoja virheitä ja muistivuotoja!
     if (m_renderPass != VK_NULL_HANDLE) {
         vkDestroyRenderPass(m_device, m_renderPass, nullptr);
@@ -1136,14 +1101,14 @@ void VulkanRenderer::cleanup() {
         }
     }
     m_swapChainImageViews.clear();
-	//tuhoa swapchain ja siihen liittyvät resurssit (Swapchain)
-	if (m_swapChain != VK_NULL_HANDLE) {
-		vkDestroySwapchainKHR(m_device, m_swapChain, nullptr);
-	}
+    //tuhoa swapchain ja siihen liittyvät resurssit (Swapchain)
+    if (m_swapChain != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(m_device, m_swapChain, nullptr);
+    }
     //tuhoa pinta (Surface)
-	if (m_surface != VK_NULL_HANDLE) {
-		vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
-	}
+    if (m_surface != VK_NULL_HANDLE) {
+        vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
+    }
     if (m_commandPool != VK_NULL_HANDLE) {
         vkDestroyCommandPool(m_device, m_commandPool, nullptr);
     }
@@ -1154,42 +1119,30 @@ void VulkanRenderer::cleanup() {
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         vkDestroyFence(m_device, m_inFlightFences[i], nullptr);
     }
-    
-    if (m_descriptorPool != VK_NULL_HANDLE) 
+
+    if (m_descriptorPool != VK_NULL_HANDLE)
         vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
 
-    if (m_descriptorSetLayout != VK_NULL_HANDLE) 
+    if (m_descriptorSetLayout != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
-    
+
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
         vkDestroyBuffer(m_device, m_uniformBuffers[i], nullptr);
         vkFreeMemory(m_device, m_uniformBuffersMemory[i], nullptr);
     }
-    
+
     for (auto framebuffer : m_swapChainFramebuffers) {
         vkDestroyFramebuffer(m_device, framebuffer, nullptr);
     }
-    if (m_indexBuffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(m_device, m_indexBuffer, nullptr);
+    //tuhota looginen laite (Device) 
+    if (m_device != VK_NULL_HANDLE) {
+        vkDestroyDevice(m_device, nullptr);
     }
-    if (m_indexBufferMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(m_device, m_indexBufferMemory, nullptr);
-    }
-    if (m_vertexBuffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(m_device, m_vertexBuffer, nullptr);
-    }
-    if (m_vertexBufferMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(m_device, m_vertexBufferMemory, nullptr);
-    }
-	//tuhota looginen laite (Device) 
-	if (m_device != VK_NULL_HANDLE) {
-		vkDestroyDevice(m_device, nullptr);
-	}
     // Tuhotaan instanssi hallitusti ohjelman sulkeutuessa
     if (m_instance != VK_NULL_HANDLE) {
         vkDestroyInstance(m_instance, nullptr);
     }
-    
-	std::cout << "Vulkan-resurssit tuhottu onnistuneesti!" << std::endl;
 
-} 
+    std::cout << "Vulkan-resurssit tuhottu onnistuneesti!" << std::endl;
+
+}
