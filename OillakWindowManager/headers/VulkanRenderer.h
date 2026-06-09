@@ -1,6 +1,9 @@
 #pragma once
 
 #define VK_USE_PLATFORM_WIN32_KHR
+#include <memory>
+#include "Scene.h"
+#include "Model.h"
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -27,9 +30,12 @@ public:
     VulkanRenderer(const VulkanRenderer&) = delete;
     VulkanRenderer& operator=(const VulkanRenderer&) = delete;
 
-    void drawFrame();
+    void drawFrame(const Scene& scene);
     void waitIdle() { vkDeviceWaitIdle(m_device); }
-
+    VkDevice getDevice() { return m_device; }
+    VkPhysicalDevice getPhysicalDevice() { return m_physicalDevice; }
+    VkCommandPool getCommandPool() { return m_commandPool; }
+    VkQueue getGraphicsQueue() { return m_graphicsQueue; }
 private:
     // --- Konfiguraatio ---
     window& m_window;
@@ -61,10 +67,7 @@ private:
     VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool      m_descriptorPool = VK_NULL_HANDLE;
 
-    VkBuffer              m_vertexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory        m_vertexBufferMemory = VK_NULL_HANDLE;
-    VkBuffer              m_indexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory        m_indexBufferMemory = VK_NULL_HANDLE;
+	std::unique_ptr<Model> m_squareModel;// Malli, joka sisältää geometriaa (esim. kolmioita) piirtämiseen ikkunaan
 
     std::vector<VkBuffer>        m_uniformBuffers;
     std::vector<VkDeviceMemory>  m_uniformBuffersMemory;
@@ -100,8 +103,6 @@ private:
     void createCommandPool();
     void createCommandBuffer();
     void createSyncObjects();
-    void createVertexBuffer();
-    void createIndexBuffer();
     void createDescriptorSetLayout();
     void createUniformBuffer();
     void createDescriptorPool();
@@ -110,7 +111,11 @@ private:
     // Apumetodit
     VkShaderModule createShaderModule(const std::vector<char>& code);
     void updateUniformBuffer(uint32_t currentFrame);
-    void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    // VulkanRenderer.h
+ // ...
+    void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex, const Scene& scene);
+
+    void updateUniformBufferForModel(uint32_t currentFrame, const glm::mat4& matrix);
 
     // Swapchainin apumetodit
     SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
