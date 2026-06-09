@@ -23,7 +23,7 @@ struct SwapChainSupportDetails {
 };
 
 struct Vertex {
-    float position[2]; // X, Y (2 floatia)
+    float position[3]; // X, Y, z (2 floatia)
     float color[3];    // R, G, B (3 floatia)
 
     // Kerrotaan Vulkanille, kuinka paljon dataa on yhdessä pisteessä
@@ -42,7 +42,7 @@ struct Vertex {
         // 1. Sijainti (location = 0)
         attributeDescriptions[0].binding = 0;
         attributeDescriptions[0].location = 0;
-        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT; // 2 floatia
+		attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT; // 3 floatia
         attributeDescriptions[0].offset = offsetof(Vertex, position);
 
         // 2. Väri (location = 1)

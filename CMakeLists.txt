@@ -12,7 +12,7 @@ find_package(Vulkan REQUIRED)
 find_program(GLSLC glslc REQUIRED)
 
 # Määritellään hakemisto, johon shaderit luodaan
-set(SHADER_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+set(SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 
 set(SHADER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/OillakWindowManager/src/shader.vert"

@@ -12,15 +12,28 @@ int main(int argc, char* argv[]) {
             preferredDevice = std::stoi(argv[1]);
         }
 
-        // 1. M‰‰ritell‰‰n mallin pisteet t‰‰ll‰, ei en‰‰ rendereriss‰!
-        std::vector<Vertex> vertices = {
-            {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}}, // Vasen yl‰
-            {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}}, // Oikea yl‰
-            {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}}, // Oikea ala
-            {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}  // Vasen ala
+      
+            // 8 kulmaa 3D-avaruudessa
+            std::vector<Vertex> vertices = {
+                {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}}, // 0: Vasen-Yl‰-Taka
+                {{ 0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}}, // 1: Oikea-Yl‰-Taka
+                {{ 0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}}, // 2: Oikea-Ala-Taka
+                {{-0.5f,  0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}}, // 3: Vasen-Ala-Taka
+                {{-0.5f, -0.5f,  0.5f}, {1.0f, 0.0f, 0.0f}}, // 4: Vasen-Yl‰-Etu
+                {{ 0.5f, -0.5f,  0.5f}, {0.0f, 1.0f, 0.0f}}, // 5: Oikea-Yl‰-Etu
+                {{ 0.5f,  0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}}, // 6: Oikea-Ala-Etu
+                {{-0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}  // 7: Vasen-Ala-Etu
         };
-        std::vector<uint16_t> indices = { 0, 1, 2, 2, 3, 0 };
 
+        // 6 sivua, jokaisessa 2 kolmiota (yhteens‰ 36 indeksi‰)
+        std::vector<uint16_t> indices = {
+            0, 1, 2, 2, 3, 0, // Taka
+            4, 5, 6, 6, 7, 4, // Etu
+            0, 4, 7, 7, 3, 0, // Vasen
+            1, 5, 6, 6, 2, 1, // Oikea
+            0, 1, 5, 5, 4, 0, // Yl‰
+            3, 2, 6, 6, 7, 3  // Ala
+        };
         // 2. Haetaan Vulkan-tyˆkalut rendererilt‰
         auto* renderer = engine.getRenderer();
         glm::vec3 pos = glm::vec3(-0.5f, 0.0f, 0.0f); glm::vec3 pos2 = glm::vec3(0.5f, 0.0f, 0.0f);

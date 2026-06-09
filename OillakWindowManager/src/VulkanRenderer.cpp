@@ -972,12 +972,11 @@ void VulkanRenderer::updateUniformBuffer(uint32_t currentFrame) {
 
     UniformBufferObject ubo{};
 
-    // POISTETTU GLOBAALI ROTAATIO TÄÄLTÄ!
-    // Luodaan vain 2D orthographic -projektio (tämä on nyt kameramme/linssimme)
-    glm::mat4 ortho = glm::ortho(-aspectRatio, aspectRatio, -1.0f, 1.0f);
+	glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspectRatio, 0.1f, 10.0f);
+glm::mat4 view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 
     // Asetetaan matriisi suoraan UBO:on
-    ubo.transform = ortho;
+    ubo.transform = proj * view;
 
     // Kopioidaan suoraan tämänhetkisen framen valmiiksi avattuun muistiputkeen
     memcpy(m_uniformBuffersMapped[m_currentFrame], &ubo, sizeof(ubo));
